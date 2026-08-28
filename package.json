@@ -1,5 +1,5 @@
 {
-  "name": "sites-project",
+  "name": "ayaya-yaml",
   "version": "0.1.0",
   "private": true,
   "engines": {
@@ -8,6 +8,7 @@
   "scripts": {
     "dev": "vinext dev",
     "build": "vinext build",
+    "build:pages": "GITHUB_PAGES=true next build",
     "start": "vinext start",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "test": "node --test --experimental-strip-types tests/*.test.ts",
