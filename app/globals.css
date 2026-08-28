@@ -233,13 +233,16 @@ button:disabled { cursor: not-allowed; opacity: .35; }
 .proxy-list { padding: 12px; }
 .node-card { margin-bottom: 8px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: #0b0b0b; }
 .node-card:last-child { margin-bottom: 0; }
+.node-card.is-unsupported { border-color: #492f2f; }
 .node-header { min-height: 68px; padding: 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line); }
 .node-title { min-width: 0; display: flex; align-items: center; gap: 11px; }
 .node-title > div { min-width: 0; }
 .node-title h3 { margin: 0 0 5px; overflow: hidden; color: #e6e6e6; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .node-title p { margin: 0; overflow: hidden; color: #777; font-family: var(--font-geist-mono); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 .protocol-badge { min-width: 48px; padding: 7px 6px; border: 1px solid #383838; border-radius: 5px; color: #cfcfcf; font-family: var(--font-geist-mono); font-size: 8px; font-weight: 750; text-align: center; }
+.is-unsupported .protocol-badge { border-color: #654040; color: var(--error); }
 .node-number { color: #3f3f3f; font-family: var(--font-geist-mono); font-size: 9px; }
+.node-warning { margin: 0; padding: 9px 12px; display: flex; align-items: center; gap: 7px; border-bottom: 1px solid #332323; background: #130d0d; color: var(--error); font-family: var(--font-geist-mono); font-size: 9px; line-height: 1.5; }
 .node-fields { margin: 0; padding: 7px 12px 10px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 18px; }
 .node-fields div { min-width: 0; min-height: 33px; display: grid; grid-template-columns: 72px minmax(0, 1fr); align-items: center; border-bottom: 1px solid #171717; font-family: var(--font-geist-mono); font-size: 9px; }
 .node-fields dt { color: #555; }

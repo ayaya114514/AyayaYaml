@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parse as parseYaml } from 'yaml';
 import {
+  inspectMihomoYaml,
   mihomoYamlToShareLinks,
   parseProxyLink,
   parseProxyLinks,
@@ -78,6 +79,31 @@ test('round-trips Mihomo YAML back to a VLESS share link', () => {
   assert.equal(proxy.publicKey, 'XSw3PublicKey');
   assert.equal(proxy.shortId, 'f7d552');
   assert.equal(proxy.flow, 'xtls-rprx-vision');
+});
+
+test('keeps unsupported Mihomo nodes visible without blocking supported conversions', () => {
+  const yaml = `proxies:
+  - name: Supported Reality
+    type: vless
+    server: supported.example.com
+    port: 443
+    uuid: demo-uuid
+    tls: true
+  - name: Unsupported Hysteria
+    type: hysteria2
+    server: unsupported.example.com
+    port: 8443
+    password: demo-password`;
+  const inspection = inspectMihomoYaml(yaml);
+
+  assert.equal(inspection.nodes.length, 2);
+  assert.equal(inspection.nodes[0].convertible, true);
+  assert.equal(inspection.nodes[1].convertible, false);
+  assert.equal(inspection.nodes[1].protocol, 'hysteria2');
+  assert.match(inspection.nodes[1].warning || '', /Unsupported Hysteria.*hysteria2.*暂不支持/);
+  assert.match(inspection.shareLinks, /^vless:\/\//);
+  assert.doesNotMatch(inspection.shareLinks, /hysteria2/);
+  assert.equal(mihomoYamlToShareLinks(yaml), inspection.shareLinks);
 });
 
 test('parses VMess, Trojan and Shadowsocks formats', () => {

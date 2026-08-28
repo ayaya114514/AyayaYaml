@@ -24,6 +24,24 @@ export interface ParsedProxy {
   raw: string;
 }
 
+export interface MihomoProxyNode {
+  index: number;
+  name: string;
+  protocol: string;
+  server?: string;
+  port?: number;
+  convertible: boolean;
+  warning?: string;
+  fields: Array<{ label: string; value: string }>;
+  parsed?: ParsedProxy;
+  shareLink?: string;
+}
+
+export interface MihomoYamlInspection {
+  nodes: MihomoProxyNode[];
+  shareLinks: string;
+}
+
 type UnknownRecord = Record<string, unknown>;
 
 const SUPPORTED_PROTOCOLS = new Set<ProxyProtocol>(['vless', 'vmess', 'trojan', 'ss']);
@@ -407,7 +425,77 @@ function fromMihomoProxy(input: unknown, index: number): ParsedProxy {
   };
 }
 
-export function mihomoYamlToShareLinks(input: string): string {
+function displayMihomoValue(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (value === null) return 'null';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try { return JSON.stringify(value); }
+  catch { return String(value); }
+}
+
+function inspectMihomoProxy(input: unknown, index: number): MihomoProxyNode {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    return {
+      index,
+      name: `Proxy ${index + 1}`,
+      protocol: 'unknown',
+      convertible: false,
+      warning: `第 ${index + 1} 个 proxy 不是对象`,
+      fields: [],
+    };
+  }
+
+  const raw = input as UnknownRecord;
+  const protocol = asString(raw.type)?.toLowerCase() || 'unknown';
+  const name = asString(raw.name) || `${protocol.toUpperCase()} ${index + 1}`;
+  const server = asString(raw.server);
+  const port = asNumber(raw.port);
+  const fields = Object.entries(raw)
+    .filter(([key]) => !['name', 'type', 'server', 'port'].includes(key))
+    .map(([label, value]) => ({ label, value: displayMihomoValue(value) }))
+    .filter((field): field is { label: string; value: string } => field.value !== undefined);
+
+  if (!SUPPORTED_PROTOCOLS.has(protocol as ProxyProtocol)) {
+    return {
+      index,
+      name,
+      protocol,
+      server,
+      port,
+      convertible: false,
+      warning: `节点「${name}」的 type「${protocol}」暂不支持转换`,
+      fields,
+    };
+  }
+
+  try {
+    const parsed = fromMihomoProxy(raw, index);
+    return {
+      index,
+      name,
+      protocol,
+      server,
+      port,
+      convertible: true,
+      fields,
+      parsed,
+      shareLink: toShareLink(parsed),
+    };
+  } catch (error) {
+    return {
+      index,
+      name,
+      protocol,
+      server,
+      port,
+      convertible: false,
+      warning: error instanceof Error ? error.message : `${name} 无法转换`,
+      fields,
+    };
+  }
+}
+
+export function inspectMihomoYaml(input: string): MihomoYamlInspection {
   let document: unknown;
   try { document = parseYaml(input); }
   catch (error) {
@@ -416,5 +504,13 @@ export function mihomoYamlToShareLinks(input: string): string {
   if (!document || typeof document !== 'object' || Array.isArray(document)) throw new Error('YAML 根节点必须是对象');
   const proxies = (document as UnknownRecord).proxies;
   if (!Array.isArray(proxies) || !proxies.length) throw new Error('YAML 中没有找到 proxies 列表');
-  return proxies.map(fromMihomoProxy).map(toShareLink).join('\n');
+  const nodes = proxies.map(inspectMihomoProxy);
+  return {
+    nodes,
+    shareLinks: nodes.flatMap((node) => node.shareLink ? [node.shareLink] : []).join('\n'),
+  };
+}
+
+export function mihomoYamlToShareLinks(input: string): string {
+  return inspectMihomoYaml(input).shareLinks;
 }

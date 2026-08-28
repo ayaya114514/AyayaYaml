@@ -15,10 +15,11 @@ import {
 import { useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import {
-  mihomoYamlToShareLinks,
+  inspectMihomoYaml,
   parseProxyLinks,
   toMihomoYaml,
   toSingBoxJson,
+  type MihomoProxyNode,
   type ParsedProxy,
 } from '../lib/proxy';
 
@@ -49,7 +50,12 @@ const MIHOMO_SAMPLE = `proxies:
     client-fingerprint: chrome
     reality-opts:
       public-key: XSw3ExamplePublicKey
-      short-id: f7d552`;
+      short-id: f7d552
+  - name: Hysteria Demo
+    type: hysteria2
+    server: hy.example.com
+    port: 443
+    password: demo-password`;
 
 type ActiveTool = 'yaml' | 'proxy';
 type SourceFormat = 'yaml' | 'json';
@@ -282,32 +288,68 @@ const FIELD_LABELS: Array<[keyof ParsedProxy, string]> = [
   ['serviceName', 'ServiceName'],
 ];
 
-function ProxyDetails({ proxies }: { proxies: ParsedProxy[] }) {
+interface ProxyDisplayNode {
+  index: number;
+  name: string;
+  protocol: string;
+  server?: string;
+  port?: number;
+  convertible: boolean;
+  warning?: string;
+  fields: Array<{ label: string; value: string }>;
+}
+
+function displayParsedProxy(proxy: ParsedProxy, index: number): ProxyDisplayNode {
+  return {
+    index,
+    name: proxy.name,
+    protocol: proxy.protocol,
+    server: proxy.server,
+    port: proxy.port,
+    convertible: true,
+    fields: FIELD_LABELS.flatMap(([key, label]) => {
+      const value = proxy[key];
+      return value === undefined || value === '' ? [] : [{ label, value: String(value) }];
+    }),
+  };
+}
+
+function displayMihomoProxy(node: MihomoProxyNode): ProxyDisplayNode {
+  return {
+    index: node.index,
+    name: node.name,
+    protocol: node.protocol,
+    server: node.server,
+    port: node.port,
+    convertible: node.convertible,
+    warning: node.warning,
+    fields: node.fields,
+  };
+}
+
+function ProxyDetails({ nodes }: { nodes: ProxyDisplayNode[] }) {
   return (
     <div className="proxy-list">
-      {proxies.map((proxy, index) => (
-        <article className="node-card" key={`${proxy.protocol}-${proxy.server}-${index}`}>
+      {nodes.map((node) => (
+        <article className={`node-card ${node.convertible ? '' : 'is-unsupported'}`} key={`${node.protocol}-${node.server}-${node.index}`}>
           <header className="node-header">
             <div className="node-title">
-              <span className="protocol-badge">{proxy.protocol.toUpperCase()}</span>
+              <span className="protocol-badge">{node.protocol.toUpperCase()}</span>
               <div>
-                <h3>{proxy.name}</h3>
-                <p>{proxy.server}:{proxy.port}</p>
+                <h3>{node.name}</h3>
+                <p>{node.server ? `${node.server}${node.port ? `:${node.port}` : ''}` : '未提供服务器'}</p>
               </div>
             </div>
-            <span className="node-number">{String(index + 1).padStart(2, '0')}</span>
+            <span className="node-number">{String(node.index + 1).padStart(2, '0')}</span>
           </header>
+          {node.warning && <p className="node-warning"><CircleAlert size={13} /> {node.warning}</p>}
           <dl className="node-fields">
-            {FIELD_LABELS.map(([key, label]) => {
-              const value = proxy[key];
-              if (value === undefined || value === '') return null;
-              return (
-                <div key={key}>
-                  <dt>{label}</dt>
-                  <dd>{String(value)}</dd>
-                </div>
-              );
-            })}
+            {node.fields.map(({ label, value }) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{value}</dd>
+              </div>
+            ))}
           </dl>
         </article>
       ))}
@@ -322,31 +364,38 @@ function ProxyStudio() {
   const [view, setView] = useState<ProxyView>('details');
 
   const result = useMemo(() => {
-    if (!input.trim()) return { proxies: [] as ParsedProxy[], mihomo: '', singbox: '', share: '', error: '' };
+    if (!input.trim()) return { proxies: [] as ParsedProxy[], nodes: [] as ProxyDisplayNode[], mihomo: '', singbox: '', share: '', unsupported: 0, error: '' };
     try {
       if (source === 'share') {
         const proxies = parseProxyLinks(input);
         return {
           proxies,
+          nodes: proxies.map(displayParsedProxy),
           mihomo: toMihomoYaml(proxies),
           singbox: toSingBoxJson(proxies),
           share: '',
+          unsupported: 0,
           error: '',
         };
       }
+      const inspection = inspectMihomoYaml(input);
       return {
-        proxies: [] as ParsedProxy[],
+        proxies: inspection.nodes.flatMap((node) => node.parsed ? [node.parsed] : []),
+        nodes: inspection.nodes.map(displayMihomoProxy),
         mihomo: '',
         singbox: '',
-        share: mihomoYamlToShareLinks(input),
+        share: inspection.shareLinks,
+        unsupported: inspection.nodes.filter((node) => !node.convertible).length,
         error: '',
       };
     } catch (error) {
       return {
         proxies: [] as ParsedProxy[],
+        nodes: [] as ProxyDisplayNode[],
         mihomo: '',
         singbox: '',
         share: '',
+        unsupported: 0,
         error: error instanceof Error ? error.message : '无法解析',
       };
     }
@@ -358,16 +407,16 @@ function ProxyStudio() {
       ? result.singbox
       : view === 'share'
         ? result.share
-        : JSON.stringify(result.proxies, null, 2);
+        : source === 'mihomo' ? result.share : JSON.stringify(result.proxies, null, 2);
   const availableViews: Array<[ProxyView, string]> = source === 'share'
     ? [['details', '节点'], ['mihomo', 'Mihomo'], ['singbox', 'sing-box']]
-    : [['share', '分享链接']];
+    : [['details', '节点'], ['share', '分享链接']];
 
   function changeSource(next: ProxySource) {
     setSource(next);
     setInput(next === 'share' ? VLESS_SAMPLE : MIHOMO_SAMPLE);
     setFileName(next === 'share' ? 'proxy-links.txt' : 'mihomo.yaml');
-    setView(next === 'share' ? 'details' : 'share');
+    setView('details');
   }
 
   return (
@@ -421,7 +470,7 @@ function ProxyStudio() {
                 <div><strong>无法解析</strong><p>{result.error}</p></div>
               </div>
             ) : view === 'details' ? (
-              <ProxyDetails proxies={result.proxies} />
+              <ProxyDetails nodes={result.nodes} />
             ) : (
               <pre className="conversion-output"><code>{output}</code></pre>
             )}
@@ -430,7 +479,9 @@ function ProxyStudio() {
       </div>
 
       <div className="statusbar">
-        <span>{result.error ? result.error : source === 'share' ? `${result.proxies.length} 个节点` : '已生成分享链接'}</span>
+        <span>{result.error ? result.error : source === 'share'
+          ? `${result.proxies.length} 个节点`
+          : `${result.nodes.length} 个节点 · ${result.nodes.length - result.unsupported} 可转换${result.unsupported ? ` · ${result.unsupported} 暂不支持` : ''}`}</span>
         <span>仅在浏览器本地处理</span>
       </div>
     </div>
