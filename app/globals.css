@@ -97,17 +97,19 @@ button:disabled { cursor: not-allowed; opacity: .35; }
 .workspace { padding-top: 18px; }
 .tool-surface { overflow: hidden; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .toolbar {
-  min-height: 52px;
-  padding: 8px 12px;
+  min-height: 62px;
+  padding: 9px 12px;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
+  align-items: stretch;
+  gap: 0;
   border-bottom: 1px solid var(--line);
 }
-.toolbar-group { display: flex; align-items: center; gap: 6px; }
+.toolbar-section { display: flex; align-items: center; gap: 7px; padding: 0 14px 0 2px; border-right: 1px solid var(--line); }
+.toolbar-section + .toolbar-section { padding-left: 14px; }
+.toolbar-section-main { flex: 1; justify-content: flex-end; border-right: 0; padding-right: 2px; }
+.toolbar-label { margin-right: 3px; color: #555; font-family: var(--font-geist-mono); font-size: 8px; font-weight: 650; letter-spacing: .08em; }
 .button, .icon-button {
-  height: 32px;
+  height: 36px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -118,6 +120,7 @@ button:disabled { cursor: not-allowed; opacity: .35; }
   color: #bcbcbc;
   cursor: pointer;
   font-size: 10px;
+  font-weight: 560;
 }
 .button { padding: 0 10px; }
 .icon-button { width: 32px; padding: 0; }
@@ -144,6 +147,11 @@ button:disabled { cursor: not-allowed; opacity: .35; }
 }
 .file-name { min-width: 0; display: flex; align-items: center; gap: 7px; overflow: hidden; color: #bcbcbc; text-overflow: ellipsis; white-space: nowrap; }
 .format-label { color: var(--subtle); font-size: 8px; letter-spacing: .08em; }
+.pane-heading-actions { display: flex; align-items: center; gap: 10px; }
+.pane-action { height: 28px; padding: 0 7px; display: inline-flex; align-items: center; gap: 5px; border: 0; border-radius: 5px; background: transparent; color: #777; cursor: pointer; font-family: var(--font-geist-sans); font-size: 9px; }
+.pane-action:hover { background: #171717; color: #bbb; }
+.danger-action { margin-left: 3px; border-left: 1px solid var(--line); border-radius: 0 5px 5px 0; color: #8c6868; }
+.danger-action:hover { background: #1a1111; color: var(--error); }
 .state { display: inline-flex; align-items: center; gap: 5px; color: #aaa; }
 .state-error { color: var(--error); }
 
@@ -216,7 +224,7 @@ button:disabled { cursor: not-allowed; opacity: .35; }
 
 .segmented { display: flex; padding: 2px; border: 1px solid var(--line); border-radius: 7px; background: #080808; }
 .segmented button, .result-tabs button {
-  height: 27px;
+  height: 31px;
   padding: 0 9px;
   border: 0;
   border-radius: 5px;
@@ -255,11 +263,13 @@ button:disabled { cursor: not-allowed; opacity: .35; }
   .app-shell { padding: 0 12px 12px; }
   .app-header { height: 58px; }
   .workspace { padding-top: 12px; }
-  .toolbar { align-items: flex-start; flex-direction: column; }
-  .toolbar-group { width: 100%; }
-  .compact-actions { justify-content: flex-end; }
+  .toolbar { align-items: stretch; flex-direction: column; gap: 8px; padding: 9px; }
+  .toolbar-section { width: 100%; min-height: 42px; padding: 0 0 8px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .toolbar-section + .toolbar-section { padding: 0; border-bottom: 0; }
+  .toolbar-section-main { justify-content: flex-start; }
+  .toolbar-label { width: 38px; flex: 0 0 auto; }
   .proxy-toolbar { align-items: stretch; }
-  .segmented { width: 100%; }
+  .segmented { flex: 1; }
   .segmented button { flex: 1; }
   .split-view { grid-template-columns: 1fr; min-height: 0; }
   .editor-pane { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -271,9 +281,11 @@ button:disabled { cursor: not-allowed; opacity: .35; }
 
 @media (max-width: 420px) {
   .local-note { font-size: 8px; }
-  .button { padding: 0 8px; }
-  .toolbar-group:first-child .button { flex: 1; }
-  .compact-actions .button { flex: 0 1 auto; }
+  .button { min-height: 40px; height: 40px; padding: 0 8px; }
+  .toolbar-section { flex-wrap: wrap; }
+  .toolbar-section .button { flex: 1; }
+  .toolbar-label { width: 100%; margin: 0 0 1px; }
+  .segmented { flex-basis: 100%; }
   .pane-heading { padding: 0 11px; }
   .text-editor { padding: 16px; font-size: 10px; }
   .tree-view { padding: 12px 8px; }

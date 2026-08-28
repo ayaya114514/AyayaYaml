@@ -140,7 +140,7 @@ function CopyButton({ value, label = '复制' }: { value: string; label?: string
   );
 }
 
-function ImportButton({ onImport, accept = '.yaml,.yml,.json' }: { onImport: (content: string, name: string) => void; accept?: string }) {
+function ImportButton({ onImport, accept = '.yaml,.yml,.json', label = '导入文件' }: { onImport: (content: string, name: string) => void; accept?: string; label?: string }) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function readFile(event: ChangeEvent<HTMLInputElement>) {
@@ -153,7 +153,7 @@ function ImportButton({ onImport, accept = '.yaml,.yml,.json' }: { onImport: (co
   return (
     <>
       <button className="button" type="button" onClick={() => inputRef.current?.click()}>
-        <FileInput size={14} /> 导入
+        <FileInput size={14} /> {label}
       </button>
       <input ref={inputRef} className="visually-hidden" type="file" accept={accept} onChange={readFile} />
     </>
@@ -210,21 +210,22 @@ function YamlStudio() {
   return (
     <div className="tool-surface">
       <div className="toolbar">
-        <div className="toolbar-group">
+        <div className="toolbar-section" aria-label="文件操作">
+          <span className="toolbar-label">文件</span>
           <ImportButton onImport={(content, name) => {
             setInput(content);
             setFileName(name);
             setNotice(`已导入 ${name}`);
           }} />
+          <button className="button" type="button" onClick={download}><Download size={14} /> 下载文件</button>
+        </div>
+        <div className="toolbar-section toolbar-section-main" aria-label="内容处理">
+          <span className="toolbar-label">处理</span>
           <button className="button" type="button" onClick={formatInput} disabled={Boolean(parsed.error)}>格式化</button>
+          <CopyButton value={input} label="复制内容" />
           <button className="button button-primary" type="button" onClick={convertInput} disabled={Boolean(parsed.error)}>
             转为 {parsed.format === 'yaml' ? 'JSON' : 'YAML'}
           </button>
-        </div>
-        <div className="toolbar-group compact-actions">
-          <CopyButton value={input} />
-          <button className="icon-button" type="button" onClick={download} aria-label="下载文件"><Download size={15} /></button>
-          <button className="icon-button" type="button" onClick={() => { setInput(''); setFileName('config.yaml'); }} aria-label="清空"><Trash2 size={15} /></button>
         </div>
       </div>
 
@@ -232,7 +233,10 @@ function YamlStudio() {
         <section className="pane editor-pane">
           <div className="pane-heading">
             <span className="file-name"><FileText size={14} /> {fileName}</span>
-            <span className="format-label">{parsed.format.toUpperCase()}</span>
+            <div className="pane-heading-actions">
+              <span className="format-label">{parsed.format.toUpperCase()}</span>
+              <button className="pane-action danger-action" type="button" onClick={() => { setInput(''); setFileName('config.yaml'); }}><Trash2 size={13} /> 清空</button>
+            </div>
           </div>
           <textarea
             className="text-editor"
@@ -422,17 +426,20 @@ function ProxyStudio() {
   return (
     <div className="tool-surface">
       <div className="toolbar proxy-toolbar">
-        <div className="segmented" role="group" aria-label="输入类型">
-          <button className={source === 'share' ? 'is-active' : ''} type="button" onClick={() => changeSource('share')}>分享链接</button>
-          <button className={source === 'mihomo' ? 'is-active' : ''} type="button" onClick={() => changeSource('mihomo')}>YAML</button>
-        </div>
-        <div className="toolbar-group compact-actions">
+        <div className="toolbar-section" aria-label="输入设置">
+          <span className="toolbar-label">输入</span>
+          <div className="segmented" role="group" aria-label="输入类型">
+            <button className={source === 'share' ? 'is-active' : ''} type="button" onClick={() => changeSource('share')}>分享链接</button>
+            <button className={source === 'mihomo' ? 'is-active' : ''} type="button" onClick={() => changeSource('mihomo')}>YAML</button>
+          </div>
           {source === 'mihomo' && (
             <ImportButton accept=".yaml,.yml" onImport={(content, name) => { setInput(content); setFileName(name); }} />
           )}
-          <button className="icon-button" type="button" onClick={() => changeSource(source)} aria-label="恢复示例"><RotateCcw size={15} /></button>
-          <CopyButton value={output} label="复制结果" />
-          <button className="icon-button" type="button" onClick={() => setInput('')} aria-label="清空"><Trash2 size={15} /></button>
+        </div>
+        <div className="toolbar-section toolbar-section-main" aria-label="当前操作">
+          <span className="toolbar-label">操作</span>
+          <button className="button" type="button" onClick={() => changeSource(source)}><RotateCcw size={14} /> 恢复示例</button>
+          <CopyButton value={output} label="复制当前结果" />
         </div>
       </div>
 
@@ -440,7 +447,10 @@ function ProxyStudio() {
         <section className="pane editor-pane">
           <div className="pane-heading">
             <span className="file-name"><FileText size={14} /> {fileName}</span>
-            <span className="format-label">{source === 'share' ? 'LINK' : 'YAML'}</span>
+            <div className="pane-heading-actions">
+              <span className="format-label">{source === 'share' ? 'LINK' : 'YAML'}</span>
+              <button className="pane-action danger-action" type="button" onClick={() => setInput('')}><Trash2 size={13} /> 清空</button>
+            </div>
           </div>
           <textarea
             className="text-editor proxy-editor"
