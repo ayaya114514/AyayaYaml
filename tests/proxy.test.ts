@@ -3,6 +3,7 @@ import test from 'node:test';
 import { parse as parseYaml } from 'yaml';
 import {
   inspectMihomoYaml,
+  inspectProxyLinks,
   mihomoYamlToShareLinks,
   parseProxyLink,
   parseProxyLinks,
@@ -104,6 +105,26 @@ test('keeps unsupported Mihomo nodes visible without blocking supported conversi
   assert.match(inspection.shareLinks, /^vless:\/\//);
   assert.doesNotMatch(inspection.shareLinks, /hysteria2/);
   assert.equal(mihomoYamlToShareLinks(yaml), inspection.shareLinks);
+});
+
+test('keeps valid share links when another line cannot be parsed', () => {
+  const input = `# comments and blank lines are ignored
+
+${realityLink}
+hysteria2://secret@unsupported.example.com:443
+trojan://secret@trojan.example.com:443?security=tls&sni=cdn.example.com#Trojan`;
+  const inspection = inspectProxyLinks(input);
+
+  assert.equal(inspection.nodes.length, 3);
+  assert.equal(inspection.proxies.length, 2);
+  assert.equal(inspection.nodes[0].lineNumber, 3);
+  assert.equal(inspection.nodes[1].lineNumber, 4);
+  assert.equal(inspection.nodes[1].parsed, undefined);
+  assert.match(inspection.nodes[1].warning || '', /暂不支持/);
+  assert.equal(inspection.nodes[2].parsed?.protocol, 'trojan');
+  assert.match(toMihomoYaml(inspection.proxies), /Reality Demo/);
+  assert.match(toMihomoYaml(inspection.proxies), /Trojan/);
+  assert.throws(() => parseProxyLinks(input), /第 4 行.*暂不支持/);
 });
 
 test('parses VMess, Trojan and Shadowsocks formats', () => {

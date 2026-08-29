@@ -16,11 +16,12 @@ import { useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import {
   inspectMihomoYaml,
-  parseProxyLinks,
+  inspectProxyLinks,
   toMihomoYaml,
   toSingBoxJson,
   type MihomoProxyNode,
   type ParsedProxy,
+  type ProxyLinkInspectionNode,
 } from '../lib/proxy';
 
 const YAML_SAMPLE = `proxies:
@@ -331,6 +332,19 @@ function displayMihomoProxy(node: MihomoProxyNode): ProxyDisplayNode {
   };
 }
 
+function displayProxyLink(node: ProxyLinkInspectionNode): ProxyDisplayNode {
+  if (node.parsed) return displayParsedProxy(node.parsed, node.index);
+  const protocol = node.raw.match(/^([a-z0-9+.-]+):\/\//i)?.[1].toLowerCase() || 'unknown';
+  return {
+    index: node.index,
+    name: `第 ${node.lineNumber} 行无法解析`,
+    protocol,
+    convertible: false,
+    warning: `第 ${node.lineNumber} 行：${node.warning}`,
+    fields: [{ label: '原始内容', value: node.raw }],
+  };
+}
+
 function ProxyDetails({ nodes }: { nodes: ProxyDisplayNode[] }) {
   return (
     <div className="proxy-list">
@@ -371,14 +385,15 @@ function ProxyStudio() {
     if (!input.trim()) return { proxies: [] as ParsedProxy[], nodes: [] as ProxyDisplayNode[], mihomo: '', singbox: '', share: '', unsupported: 0, error: '' };
     try {
       if (source === 'share') {
-        const proxies = parseProxyLinks(input);
+        const inspection = inspectProxyLinks(input);
+        const proxies = inspection.proxies;
         return {
           proxies,
-          nodes: proxies.map(displayParsedProxy),
-          mihomo: toMihomoYaml(proxies),
-          singbox: toSingBoxJson(proxies),
+          nodes: inspection.nodes.map(displayProxyLink),
+          mihomo: proxies.length ? toMihomoYaml(proxies) : '',
+          singbox: proxies.length ? toSingBoxJson(proxies) : '',
           share: '',
-          unsupported: 0,
+          unsupported: inspection.nodes.length - proxies.length,
           error: '',
         };
       }
@@ -469,7 +484,12 @@ function ProxyStudio() {
                 <button key={key} className={view === key ? 'is-active' : ''} type="button" onClick={() => setView(key)}>{label}</button>
               ))}
             </div>
-            {!result.error && input.trim() && <span className="state"><Check size={13} /> Ready</span>}
+            {!result.error && input.trim() && (
+              <span className="state">
+                {result.unsupported ? <CircleAlert size={13} /> : <Check size={13} />}
+                {result.unsupported ? `${result.unsupported} 条需检查` : 'Ready'}
+              </span>
+            )}
           </div>
           <div className="proxy-output">
             {!input.trim() ? (
@@ -481,6 +501,8 @@ function ProxyStudio() {
               </div>
             ) : view === 'details' ? (
               <ProxyDetails nodes={result.nodes} />
+            ) : !output ? (
+              <div className="empty-state"><CircleAlert size={22} /><p>没有可转换的节点</p></div>
             ) : (
               <pre className="conversion-output"><code>{output}</code></pre>
             )}
@@ -490,7 +512,7 @@ function ProxyStudio() {
 
       <div className="statusbar">
         <span>{result.error ? result.error : source === 'share'
-          ? `${result.proxies.length} 个节点`
+          ? `${result.nodes.length} 条链接 · ${result.proxies.length} 可转换${result.unsupported ? ` · ${result.unsupported} 需检查` : ''}`
           : `${result.nodes.length} 个节点 · ${result.nodes.length - result.unsupported} 可转换${result.unsupported ? ` · ${result.unsupported} 暂不支持` : ''}`}</span>
         <span>仅在浏览器本地处理</span>
       </div>

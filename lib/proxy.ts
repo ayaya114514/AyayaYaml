@@ -42,6 +42,19 @@ export interface MihomoYamlInspection {
   shareLinks: string;
 }
 
+export interface ProxyLinkInspectionNode {
+  index: number;
+  lineNumber: number;
+  raw: string;
+  parsed?: ParsedProxy;
+  warning?: string;
+}
+
+export interface ProxyLinkInspection {
+  nodes: ProxyLinkInspectionNode[];
+  proxies: ParsedProxy[];
+}
+
 type UnknownRecord = Record<string, unknown>;
 
 const SUPPORTED_PROTOCOLS = new Set<ProxyProtocol>(['vless', 'vmess', 'trojan', 'ss']);
@@ -216,16 +229,41 @@ export function parseProxyLink(input: string): ParsedProxy {
   return parseShadowsocks(raw);
 }
 
-export function parseProxyLinks(input: string): ParsedProxy[] {
-  const links = input.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));
-  if (!links.length) throw new Error('请先粘贴至少一条代理分享链接');
-  return links.map((link, index) => {
-    try { return parseProxyLink(link); }
-    catch (error) {
-      const message = error instanceof Error ? error.message : '未知错误';
-      throw new Error(links.length > 1 ? `第 ${index + 1} 条链接：${message}` : message);
+export function inspectProxyLinks(input: string): ProxyLinkInspection {
+  const entries = input.split(/\r?\n/).flatMap((line, index) => {
+    const raw = line.trim();
+    return raw && !raw.startsWith('#') ? [{ raw, lineNumber: index + 1 }] : [];
+  });
+  if (!entries.length) throw new Error('请先粘贴至少一条代理分享链接');
+
+  const nodes = entries.map(({ raw, lineNumber }, index): ProxyLinkInspectionNode => {
+    try {
+      return { index, lineNumber, raw, parsed: parseProxyLink(raw) };
+    } catch (error) {
+      return {
+        index,
+        lineNumber,
+        raw,
+        warning: error instanceof Error ? error.message : '未知错误',
+      };
     }
   });
+
+  return {
+    nodes,
+    proxies: nodes.flatMap((node) => node.parsed ? [node.parsed] : []),
+  };
+}
+
+export function parseProxyLinks(input: string): ParsedProxy[] {
+  const inspection = inspectProxyLinks(input);
+  const invalid = inspection.nodes.find((node) => !node.parsed);
+  if (invalid) {
+    throw new Error(inspection.nodes.length > 1
+      ? `第 ${invalid.lineNumber} 行：${invalid.warning}`
+      : invalid.warning);
+  }
+  return inspection.proxies;
 }
 
 function compact<T extends UnknownRecord>(record: T): T {
