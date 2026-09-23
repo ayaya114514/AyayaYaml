@@ -150,3 +150,97 @@ test('rejects incomplete ports and unsupported protocols', () => {
   assert.throws(() => parseProxyLink('vless://uuid@example.com:443?security=reality'), /PublicKey/);
   assert.throws(() => parseProxyLink('hysteria2://secret@example.com:443'), /暂不支持/);
 });
+
+test('keeps TLS for Mihomo trojan nodes and writes trojan sni', () => {
+  const links = mihomoYamlToShareLinks(`proxies:
+  - {name: T, type: trojan, server: t.example.com, port: 443, password: p, sni: cdn.example.com}`);
+  const trojan = parseProxyLink(links);
+  assert.equal(trojan.security, 'tls');
+  assert.equal(trojan.sni, 'cdn.example.com');
+
+  const proxy = (parseYaml(toMihomoYaml([trojan])) as { proxies: Array<Record<string, unknown>> }).proxies[0];
+  assert.equal(proxy.sni, 'cdn.example.com');
+  assert.equal(proxy.servername, undefined);
+});
+
+test('does not restrict sing-box outbounds to TCP', () => {
+  const output = JSON.parse(toSingBoxJson(parseProxyLinks(realityLink))) as { outbounds: Array<Record<string, unknown>> };
+  assert.equal(output.outbounds[0].network, undefined);
+});
+
+test('strips IPv6 brackets from share link hosts', () => {
+  const proxy = parseProxyLink('vless://uuid@[2001:db8::1]:443?security=tls#v6');
+  assert.equal(proxy.server, '2001:db8::1');
+  assert.match(toMihomoYaml([proxy]), /server: 2001:db8::1/);
+  assert.match(mihomoYamlToShareLinks(toMihomoYaml([proxy])), /@\[2001:db8::1\]:443/);
+});
+
+test('numbers duplicate node names for Mihomo and sing-box', () => {
+  const proxies = parseProxyLinks('trojan://p@a.example.com:443#HK\ntrojan://p@b.example.com:443#HK');
+  const yaml = parseYaml(toMihomoYaml(proxies)) as { proxies: Array<{ name: string }>; 'proxy-groups': Array<{ proxies: string[] }> };
+  assert.deepEqual(yaml.proxies.map((proxy) => proxy.name), ['HK', 'HK 2']);
+  assert.deepEqual(yaml['proxy-groups'][0].proxies, ['HK', 'HK 2']);
+  const singbox = JSON.parse(toSingBoxJson(proxies)) as { outbounds: Array<{ tag: string }> };
+  assert.deepEqual(singbox.outbounds.map((outbound) => outbound.tag), ['HK', 'HK 2']);
+});
+
+test('converts httpupgrade, h2 and VMess gRPC transports', () => {
+  const upgrade = parseProxyLink('vless://u@a.example.com:443?type=httpupgrade&path=%2Fup&host=cdn.example.com&security=tls#Up');
+  const upgradeYaml = (parseYaml(toMihomoYaml([upgrade])) as { proxies: Array<Record<string, unknown>> }).proxies[0];
+  assert.equal(upgradeYaml.network, 'ws');
+  assert.deepEqual(upgradeYaml['ws-opts'], { path: '/up', headers: { Host: 'cdn.example.com' }, 'v2ray-http-upgrade': true });
+  const upgradeBox = JSON.parse(toSingBoxJson([upgrade])) as { outbounds: Array<{ transport: unknown }> };
+  assert.deepEqual(upgradeBox.outbounds[0].transport, { type: 'httpupgrade', path: '/up', host: 'cdn.example.com' });
+  assert.equal(parseProxyLink(mihomoYamlToShareLinks(toMihomoYaml([upgrade]))).transport, 'httpupgrade');
+
+  const h2 = parseProxyLink('vless://u@a.example.com:443?type=http&path=%2Fh2&host=cdn.example.com&security=tls#H2');
+  assert.equal(h2.transport, 'h2');
+  const h2Box = JSON.parse(toSingBoxJson([h2])) as { outbounds: Array<{ transport: unknown }> };
+  assert.deepEqual(h2Box.outbounds[0].transport, { type: 'http', path: '/h2', host: ['cdn.example.com'] });
+
+  const vmessPayload = Buffer.from(JSON.stringify({ add: 'a.example.com', port: 443, id: 'u', net: 'grpc', path: 'svc', tls: 'tls' })).toString('base64');
+  const vmess = parseProxyLink(`vmess://${vmessPayload}`);
+  assert.equal(vmess.serviceName, 'svc');
+  assert.match(toMihomoYaml([vmess]), /grpc-service-name: svc/);
+});
+
+test('keeps alpn and allowInsecure', () => {
+  const proxy = parseProxyLink('trojan://p@a.example.com:443?alpn=h2,http%2F1.1&allowInsecure=1#T');
+  const yaml = (parseYaml(toMihomoYaml([proxy])) as { proxies: Array<Record<string, unknown>> }).proxies[0];
+  assert.deepEqual(yaml.alpn, ['h2', 'http/1.1']);
+  assert.equal(yaml['skip-cert-verify'], true);
+  const box = JSON.parse(toSingBoxJson([proxy])) as { outbounds: Array<{ tls: Record<string, unknown> }> };
+  assert.equal(box.outbounds[0].tls.insecure, true);
+  assert.deepEqual(box.outbounds[0].tls.alpn, ['h2', 'http/1.1']);
+});
+
+test('rejects transports and plugins that cannot be converted', () => {
+  assert.throws(() => parseProxyLink('vless://u@a.example.com:443?type=xhttp&security=tls'), /暂不支持 xhttp 传输/);
+  assert.throws(() => parseProxyLink('ss://YWVzLTI1Ni1nY206cGFzcw@a.example.com:8388/?plugin=kcptun#K'), /暂不支持 SS 插件/);
+  const inspection = inspectMihomoYaml(`proxies:
+  - {name: X, type: vless, server: a.example.com, port: 443, uuid: u, network: xhttp}`);
+  assert.equal(inspection.nodes[0].convertible, false);
+  assert.match(inspection.nodes[0].warning || '', /xhttp.*暂不支持/);
+});
+
+test('parses SIP002 plugin links and names containing #', () => {
+  const proxy = parseProxyLink('ss://YWVzLTI1Ni1nY206cGFzcw@a.example.com:8388/?plugin=obfs-local%3Bobfs%3Dhttp%3Bobfs-host%3Dcdn.example.com#A%23B');
+  assert.equal(proxy.name, 'A#B');
+  assert.equal(proxy.plugin, 'obfs-local');
+  const yaml = (parseYaml(toMihomoYaml([proxy])) as { proxies: Array<Record<string, unknown>> }).proxies[0];
+  assert.equal(yaml.plugin, 'obfs');
+  assert.deepEqual(yaml['plugin-opts'], { mode: 'http', host: 'cdn.example.com' });
+  const box = JSON.parse(toSingBoxJson([proxy])) as { outbounds: Array<Record<string, unknown>> };
+  assert.equal(box.outbounds[0].plugin, 'obfs-local');
+  assert.equal(box.outbounds[0].plugin_opts, 'obfs=http;obfs-host=cdn.example.com');
+  const rebuilt = parseProxyLink(mihomoYamlToShareLinks(toMihomoYaml([proxy])));
+  assert.equal(rebuilt.pluginOpts, 'obfs=http;obfs-host=cdn.example.com');
+});
+
+test('decodes Base64 subscriptions', () => {
+  const subscription = Buffer.from(`${realityLink.replace('\\:', ':')}\ntrojan://p@a.example.com:443#T\n`).toString('base64');
+  const inspection = inspectProxyLinks(`${subscription.slice(0, 40)}\n${subscription.slice(40)}`);
+  assert.equal(inspection.base64, true);
+  assert.equal(inspection.proxies.length, 2);
+  assert.equal(inspectProxyLinks(realityLink).base64, false);
+});
