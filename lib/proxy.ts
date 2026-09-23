@@ -20,9 +20,15 @@ export interface ParsedProxy {
   path?: string;
   host?: string;
   serviceName?: string;
+  alpn?: string[];
+  skipCertVerify?: boolean;
+  plugin?: SsPlugin;
+  pluginOpts?: string;
   alterId?: number;
   raw: string;
 }
+
+export type SsPlugin = 'obfs-local' | 'v2ray-plugin';
 
 export interface MihomoProxyNode {
   index: number;
@@ -53,11 +59,14 @@ export interface ProxyLinkInspectionNode {
 export interface ProxyLinkInspection {
   nodes: ProxyLinkInspectionNode[];
   proxies: ParsedProxy[];
+  /** The input was a Base64-encoded subscription and has been decoded. */
+  base64: boolean;
 }
 
 type UnknownRecord = Record<string, unknown>;
 
 const SUPPORTED_PROTOCOLS = new Set<ProxyProtocol>(['vless', 'vmess', 'trojan', 'ss']);
+const SUPPORTED_TRANSPORTS = new Set(['tcp', 'ws', 'grpc', 'h2', 'httpupgrade']);
 
 function asString(value: unknown): string | undefined {
   if (typeof value === 'string' && value.trim()) return value.trim();
@@ -102,6 +111,44 @@ function encodeBase64(value: string): string {
   return Buffer.from(value, 'utf8').toString('base64');
 }
 
+function normalizeTransport(value: string | undefined): string {
+  const transport = (value || 'tcp').toLowerCase();
+  // Xray renamed tcp to raw, and v2ray share links use http for HTTP/2.
+  const normalized = transport === 'raw' ? 'tcp' : transport === 'http' ? 'h2' : transport;
+  if (!SUPPORTED_TRANSPORTS.has(normalized)) throw new Error(`暂不支持 ${transport} 传输`);
+  return normalized;
+}
+
+function splitList(value: unknown): string[] | undefined {
+  const items = Array.isArray(value)
+    ? value.flatMap((item) => asString(item) ?? [])
+    : (asString(value) ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+  return items.length ? items : undefined;
+}
+
+function isTruthyFlag(value: string | null): boolean | undefined {
+  return value === '1' || value === 'true' ? true : undefined;
+}
+
+function stripBrackets(host: string): string {
+  return host.replace(/^\[(.*)\]$/, '$1');
+}
+
+function parseSsPlugin(value: string | null): Pick<ParsedProxy, 'plugin' | 'pluginOpts'> {
+  if (!value) return {};
+  const [name, ...options] = value.split(';');
+  const plugin = name === 'simple-obfs' ? 'obfs-local' : name;
+  if (plugin !== 'obfs-local' && plugin !== 'v2ray-plugin') throw new Error(`暂不支持 SS 插件 ${name}`);
+  return { plugin, pluginOpts: options.join(';') || undefined };
+}
+
+function pluginOptions(value: string | undefined): Record<string, string> {
+  return Object.fromEntries((value || '').split(';').filter(Boolean).map((option) => {
+    const index = option.indexOf('=');
+    return index < 0 ? [option, 'true'] : [option.slice(0, index), option.slice(index + 1)];
+  }));
+}
+
 function parsePort(value: string | number | undefined): number {
   const port = Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
@@ -124,16 +171,17 @@ function parseVlessOrTrojan(raw: string, protocol: 'vless' | 'trojan'): ParsedPr
   const credential = decodeURIComponent(url.username);
   if (!credential) throw new Error(`${protocol.toUpperCase()} 链接缺少认证信息`);
   if (!url.hostname) throw new Error('分享链接缺少服务器地址');
+  const server = stripBrackets(url.hostname);
 
-  const transport = url.searchParams.get('type') || url.searchParams.get('network') || 'tcp';
+  const transport = normalizeTransport(url.searchParams.get('type') || url.searchParams.get('network') || undefined);
   const security = url.searchParams.get('security') || (protocol === 'trojan' ? 'tls' : 'none');
   const publicKey = url.searchParams.get('pbk') || url.searchParams.get('publicKey') || undefined;
   if (security === 'reality' && !publicKey) throw new Error('Reality 链接缺少 PublicKey（pbk）');
 
   return {
     protocol,
-    name: decodeName(url.hash, `${protocol.toUpperCase()} · ${url.hostname}`),
-    server: url.hostname,
+    name: decodeName(url.hash, `${protocol.toUpperCase()} · ${server}`),
+    server,
     port: parsePort(url.port),
     ...(protocol === 'vless' ? { uuid: credential } : { password: credential }),
     encryption: url.searchParams.get('encryption') || (protocol === 'vless' ? 'none' : undefined),
@@ -147,6 +195,8 @@ function parseVlessOrTrojan(raw: string, protocol: 'vless' | 'trojan'): ParsedPr
     path: url.searchParams.get('path') || undefined,
     host: url.searchParams.get('host') || undefined,
     serviceName: url.searchParams.get('serviceName') || undefined,
+    alpn: splitList(url.searchParams.get('alpn')),
+    skipCertVerify: isTruthyFlag(url.searchParams.get('allowInsecure') ?? url.searchParams.get('insecure')),
     raw,
   };
 }
@@ -163,6 +213,8 @@ function parseVmess(raw: string): ParsedProxy {
   const server = asString(read(config, 'add', 'server'));
   const uuid = asString(read(config, 'id', 'uuid'));
   if (!server || !uuid) throw new Error('VMess 链接缺少服务器或 UUID');
+  const transport = normalizeTransport(asString(read(config, 'net', 'network')));
+  const path = asString(read(config, 'path'));
 
   return {
     protocol: 'vmess',
@@ -172,21 +224,27 @@ function parseVmess(raw: string): ParsedProxy {
     uuid,
     alterId: asNumber(read(config, 'aid', 'alterId')) || 0,
     encryption: asString(read(config, 'scy', 'cipher')) || 'auto',
-    transport: asString(read(config, 'net', 'network')) || 'tcp',
+    transport,
     security: asString(read(config, 'tls', 'security')) || 'none',
     sni: asString(read(config, 'sni', 'servername')),
-    path: asString(read(config, 'path')),
+    // VMess share links carry the gRPC service name in `path`.
+    path: transport === 'grpc' ? undefined : path,
+    serviceName: transport === 'grpc' ? path : undefined,
     host: asString(read(config, 'host')),
     fingerprint: asString(read(config, 'fp')),
+    alpn: splitList(read(config, 'alpn')),
     raw,
   };
 }
 
 function parseShadowsocks(raw: string): ParsedProxy {
   const withoutScheme = raw.slice('ss://'.length);
-  const [mainPart, fragment = ''] = withoutScheme.split('#', 2);
-  const queryless = mainPart.split('?')[0];
-  let authority = queryless;
+  const hashIndex = withoutScheme.indexOf('#');
+  const mainPart = hashIndex < 0 ? withoutScheme : withoutScheme.slice(0, hashIndex);
+  const fragment = hashIndex < 0 ? '' : withoutScheme.slice(hashIndex + 1);
+  const queryIndex = mainPart.indexOf('?');
+  const query = new URLSearchParams(queryIndex < 0 ? '' : mainPart.slice(queryIndex + 1));
+  let authority = (queryIndex < 0 ? mainPart : mainPart.slice(0, queryIndex)).replace(/\/$/, '');
 
   if (!authority.includes('@')) {
     try { authority = decodeBase64(authority); }
@@ -213,6 +271,7 @@ function parseShadowsocks(raw: string): ParsedProxy {
     encryption: decodeURIComponent(method),
     transport: 'tcp',
     security: 'none',
+    ...parseSsPlugin(query.get('plugin')),
     raw,
   };
 }
@@ -229,8 +288,20 @@ export function parseProxyLink(input: string): ParsedProxy {
   return parseShadowsocks(raw);
 }
 
+function decodeSubscription(input: string): string | undefined {
+  const compacted = input.replace(/\s+/g, '');
+  if (!compacted || input.includes('://') || !/^[A-Za-z0-9+/_-]+=*$/.test(compacted)) return undefined;
+  try {
+    const decoded = decodeBase64(compacted);
+    return /^[a-z0-9]+:\/\//im.test(decoded) ? decoded : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function inspectProxyLinks(input: string): ProxyLinkInspection {
-  const entries = input.split(/\r?\n/).flatMap((line, index) => {
+  const decoded = decodeSubscription(input);
+  const entries = (decoded ?? input).split(/\r?\n/).flatMap((line, index) => {
     const raw = line.trim();
     return raw && !raw.startsWith('#') ? [{ raw, lineNumber: index + 1 }] : [];
   });
@@ -252,7 +323,19 @@ export function inspectProxyLinks(input: string): ProxyLinkInspection {
   return {
     nodes,
     proxies: nodes.flatMap((node) => node.parsed ? [node.parsed] : []),
+    base64: decoded !== undefined,
   };
+}
+
+/** Mihomo and sing-box both reject duplicate node names, so number repeats. */
+export function withUniqueNames(proxies: ParsedProxy[]): ParsedProxy[] {
+  const used = new Set<string>();
+  return proxies.map((proxy) => {
+    let name = proxy.name;
+    for (let suffix = 2; used.has(name); suffix += 1) name = `${proxy.name} ${suffix}`;
+    used.add(name);
+    return name === proxy.name ? proxy : { ...proxy, name };
+  });
 }
 
 export function parseProxyLinks(input: string): ParsedProxy[] {
@@ -271,18 +354,40 @@ function compact<T extends UnknownRecord>(record: T): T {
 }
 
 function transportOptions(proxy: ParsedProxy): UnknownRecord {
-  if (proxy.transport === 'ws') {
+  if (proxy.transport === 'ws' || proxy.transport === 'httpupgrade') {
     return {
+      network: 'ws',
       'ws-opts': compact({
         path: proxy.path,
         headers: proxy.host ? { Host: proxy.host } : undefined,
+        'v2ray-http-upgrade': proxy.transport === 'httpupgrade' || undefined,
       }),
     };
   }
-  if (proxy.transport === 'grpc') {
-    return { 'grpc-opts': compact({ 'grpc-service-name': proxy.serviceName }) };
+  if (proxy.transport === 'h2') {
+    return { network: 'h2', 'h2-opts': compact({ host: splitList(proxy.host), path: proxy.path }) };
   }
-  return {};
+  if (proxy.transport === 'grpc') {
+    return { network: 'grpc', 'grpc-opts': compact({ 'grpc-service-name': proxy.serviceName }) };
+  }
+  return { network: proxy.transport };
+}
+
+function toMihomoPlugin(proxy: ParsedProxy): UnknownRecord {
+  if (!proxy.plugin) return {};
+  const options = pluginOptions(proxy.pluginOpts);
+  if (proxy.plugin === 'obfs-local') {
+    return { plugin: 'obfs', 'plugin-opts': compact({ mode: options.obfs, host: options['obfs-host'] }) };
+  }
+  return {
+    plugin: 'v2ray-plugin',
+    'plugin-opts': compact({
+      mode: options.mode || 'websocket',
+      tls: options.tls === 'true' || undefined,
+      host: options.host,
+      path: options.path,
+    }),
+  };
 }
 
 function toMihomoProxy(proxy: ParsedProxy): UnknownRecord {
@@ -295,17 +400,20 @@ function toMihomoProxy(proxy: ParsedProxy): UnknownRecord {
   };
 
   if (proxy.protocol === 'ss') {
-    return compact({ ...base, cipher: proxy.encryption, password: proxy.password });
+    return compact({ ...base, cipher: proxy.encryption, password: proxy.password, ...toMihomoPlugin(proxy) });
   }
 
   const tlsEnabled = proxy.security !== 'none';
+  // Mihomo trojan is always TLS and names its SNI option `sni`.
+  const isTrojan = proxy.protocol === 'trojan';
   return compact({
     ...base,
-    ...(proxy.protocol === 'trojan' ? { password: proxy.password } : { uuid: proxy.uuid }),
+    ...(isTrojan ? { password: proxy.password } : { uuid: proxy.uuid }),
     ...(proxy.protocol === 'vmess' ? { alterId: proxy.alterId || 0, cipher: proxy.encryption || 'auto' } : {}),
-    tls: tlsEnabled || undefined,
-    network: proxy.transport,
-    servername: proxy.sni,
+    tls: isTrojan ? undefined : tlsEnabled || undefined,
+    ...(isTrojan ? { sni: proxy.sni } : { servername: proxy.sni }),
+    alpn: tlsEnabled ? proxy.alpn : undefined,
+    'skip-cert-verify': tlsEnabled ? proxy.skipCertVerify : undefined,
     flow: proxy.flow,
     'client-fingerprint': proxy.fingerprint,
     'reality-opts': proxy.security === 'reality' ? compact({
@@ -316,7 +424,8 @@ function toMihomoProxy(proxy: ParsedProxy): UnknownRecord {
   });
 }
 
-export function toMihomoYaml(proxies: ParsedProxy[]): string {
+export function toMihomoYaml(input: ParsedProxy[]): string {
+  const proxies = withUniqueNames(input);
   const names = proxies.map((proxy) => proxy.name);
   return stringifyYaml({
     proxies: proxies.map(toMihomoProxy),
@@ -327,6 +436,12 @@ export function toMihomoYaml(proxies: ParsedProxy[]): string {
 function toSingBoxTransport(proxy: ParsedProxy): UnknownRecord | undefined {
   if (proxy.transport === 'ws') {
     return compact({ type: 'ws', path: proxy.path, headers: proxy.host ? { Host: proxy.host } : undefined });
+  }
+  if (proxy.transport === 'httpupgrade') {
+    return compact({ type: 'httpupgrade', path: proxy.path, host: proxy.host });
+  }
+  if (proxy.transport === 'h2') {
+    return compact({ type: 'http', path: proxy.path, host: splitList(proxy.host) });
   }
   if (proxy.transport === 'grpc') {
     return compact({ type: 'grpc', service_name: proxy.serviceName });
@@ -339,6 +454,8 @@ function toSingBoxOutbound(proxy: ParsedProxy): UnknownRecord {
   const tls = tlsEnabled ? compact({
     enabled: true,
     server_name: proxy.sni,
+    insecure: proxy.skipCertVerify,
+    alpn: proxy.alpn,
     utls: proxy.fingerprint ? { enabled: true, fingerprint: proxy.fingerprint } : undefined,
     reality: proxy.security === 'reality' ? compact({
       enabled: true,
@@ -355,17 +472,18 @@ function toSingBoxOutbound(proxy: ParsedProxy): UnknownRecord {
     uuid: proxy.uuid,
     password: proxy.password,
     method: proxy.protocol === 'ss' ? proxy.encryption : undefined,
+    plugin: proxy.plugin,
+    plugin_opts: proxy.pluginOpts,
     security: proxy.protocol === 'vmess' ? proxy.encryption || 'auto' : undefined,
     alter_id: proxy.protocol === 'vmess' ? proxy.alterId || 0 : undefined,
     flow: proxy.flow,
-    network: proxy.transport === 'tcp' ? 'tcp' : undefined,
     tls,
     transport: toSingBoxTransport(proxy),
   });
 }
 
 export function toSingBoxJson(proxies: ParsedProxy[]): string {
-  return JSON.stringify({ outbounds: proxies.map(toSingBoxOutbound) }, null, 2);
+  return JSON.stringify({ outbounds: withUniqueNames(proxies).map(toSingBoxOutbound) }, null, 2);
 }
 
 function formatHost(host: string): string {
@@ -388,6 +506,8 @@ function buildUrlProxy(proxy: ParsedProxy): string {
   if (proxy.path) params.set('path', proxy.path);
   if (proxy.host) params.set('host', proxy.host);
   if (proxy.serviceName) params.set('serviceName', proxy.serviceName);
+  if (proxy.alpn) params.set('alpn', proxy.alpn.join(','));
+  if (proxy.skipCertVerify) params.set('allowInsecure', '1');
 
   const query = params.toString();
   return `${proxy.protocol}://${encodeURIComponent(credential)}@${formatHost(proxy.server)}:${proxy.port}${query ? `?${query}` : ''}#${encodeURIComponent(proxy.name)}`;
@@ -405,17 +525,21 @@ function buildVmess(proxy: ParsedProxy): string {
     net: proxy.transport || 'tcp',
     type: 'none',
     host: proxy.host || '',
-    path: proxy.path || '',
+    path: (proxy.transport === 'grpc' ? proxy.serviceName : proxy.path) || '',
     tls: proxy.security === 'none' ? '' : proxy.security,
     sni: proxy.sni || '',
     fp: proxy.fingerprint || '',
+    alpn: proxy.alpn?.join(',') || '',
   }))}`;
 }
 
 function buildShadowsocks(proxy: ParsedProxy): string {
   if (!proxy.encryption || !proxy.password) throw new Error(`${proxy.name} 缺少 cipher 或 password`);
   const credentials = encodeBase64(`${proxy.encryption}:${proxy.password}`).replace(/=+$/, '');
-  return `ss://${credentials}@${formatHost(proxy.server)}:${proxy.port}#${encodeURIComponent(proxy.name)}`;
+  const plugin = proxy.plugin
+    ? `/?plugin=${encodeURIComponent([proxy.plugin, proxy.pluginOpts].filter(Boolean).join(';'))}`
+    : '';
+  return `ss://${credentials}@${formatHost(proxy.server)}:${proxy.port}${plugin}#${encodeURIComponent(proxy.name)}`;
 }
 
 export function toShareLink(proxy: ParsedProxy): string {
@@ -437,8 +561,15 @@ function fromMihomoProxy(input: unknown, index: number): ParsedProxy {
   const reality = read(proxy, 'reality-opts', 'realityOpts') as UnknownRecord | undefined;
   const ws = read(proxy, 'ws-opts', 'wsOpts') as UnknownRecord | undefined;
   const wsHeaders = ws?.headers as UnknownRecord | undefined;
+  const h2 = read(proxy, 'h2-opts', 'h2Opts') as UnknownRecord | undefined;
   const grpc = read(proxy, 'grpc-opts', 'grpcOpts') as UnknownRecord | undefined;
-  const network = asString(read(proxy, 'network')) || 'tcp';
+  const network = asString(read(proxy, 'network'))?.toLowerCase() || 'tcp';
+  // Mihomo `http` is a TCP header disguise, not the share-link HTTP/2 transport.
+  if (network === 'http' || network === 'httpupgrade' || !SUPPORTED_TRANSPORTS.has(network)) {
+    throw new Error(`${name} 的 network「${network}」暂不支持转换`);
+  }
+  const transport = network === 'ws' && ws?.['v2ray-http-upgrade'] === true ? 'httpupgrade' : network;
+  const security = reality ? 'reality' : proxy.tls === true || protocol === 'trojan' ? 'tls' : 'none';
 
   return {
     protocol,
@@ -448,19 +579,50 @@ function fromMihomoProxy(input: unknown, index: number): ParsedProxy {
     uuid: asString(proxy.uuid),
     password: asString(proxy.password),
     encryption: asString(read(proxy, 'cipher', 'encryption')) || (protocol === 'vless' ? 'none' : undefined),
-    transport: network,
-    security: reality ? 'reality' : proxy.tls ? 'tls' : 'none',
+    transport,
+    security,
     sni: asString(read(proxy, 'servername', 'sni')),
     flow: asString(proxy.flow),
     publicKey: reality ? asString(read(reality, 'public-key', 'publicKey')) : undefined,
     shortId: reality ? asString(read(reality, 'short-id', 'shortId')) : undefined,
     fingerprint: asString(read(proxy, 'client-fingerprint', 'clientFingerprint')),
-    path: ws ? asString(ws.path) : undefined,
-    host: wsHeaders ? asString(read(wsHeaders, 'Host', 'host')) : undefined,
+    path: asString(ws?.path ?? h2?.path),
+    host: wsHeaders ? asString(read(wsHeaders, 'Host', 'host')) : splitList(h2?.host)?.join(','),
     serviceName: grpc ? asString(read(grpc, 'grpc-service-name', 'serviceName')) : undefined,
+    alpn: security === 'none' ? undefined : splitList(proxy.alpn),
+    skipCertVerify: security !== 'none' && proxy['skip-cert-verify'] === true ? true : undefined,
+    ...(protocol === 'ss' ? fromMihomoPlugin(proxy, name) : {}),
     alterId: asNumber(read(proxy, 'alterId', 'alter-id')),
     raw: '',
   };
+}
+
+function fromMihomoPlugin(proxy: UnknownRecord, name: string): Pick<ParsedProxy, 'plugin' | 'pluginOpts'> {
+  const plugin = asString(proxy.plugin);
+  if (!plugin) return {};
+  const options = (read(proxy, 'plugin-opts', 'pluginOpts') || {}) as UnknownRecord;
+  const join = (entries: Array<string | undefined>) => entries.filter(Boolean).join(';') || undefined;
+  if (plugin === 'obfs') {
+    return {
+      plugin: 'obfs-local',
+      pluginOpts: join([
+        asString(options.mode) && `obfs=${asString(options.mode)}`,
+        asString(options.host) && `obfs-host=${asString(options.host)}`,
+      ]),
+    };
+  }
+  if (plugin === 'v2ray-plugin') {
+    return {
+      plugin: 'v2ray-plugin',
+      pluginOpts: join([
+        `mode=${asString(options.mode) || 'websocket'}`,
+        options.tls === true ? 'tls' : undefined,
+        asString(options.host) && `host=${asString(options.host)}`,
+        asString(options.path) && `path=${asString(options.path)}`,
+      ]),
+    };
+  }
+  throw new Error(`${name} 的插件「${plugin}」暂不支持转换`);
 }
 
 function displayMihomoValue(value: unknown): string | undefined {

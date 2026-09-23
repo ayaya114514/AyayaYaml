@@ -1,18 +1,6 @@
 'use client';
 
-import {
-  Check,
-  CircleAlert,
-  Clipboard,
-  ClipboardCheck,
-  Download,
-  FileInput,
-  FileText,
-  Network,
-  RotateCcw,
-  Trash2,
-} from 'lucide-react';
-import { useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from 'react';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import {
   inspectMihomoYaml,
@@ -36,21 +24,25 @@ proxy-groups:
     proxies:
       - Hong Kong 01`;
 
-const VLESS_SAMPLE = 'vless://8133d14c-a942-4ce3-9424-13b9395fbf1d@82.139.194.56:443?encryption=none&security=reality&type=tcp&sni=elaon.de&fp=chrome&pbk=XSw3ExamplePublicKey&sid=f7d552&flow=xtls-rprx-vision#Reality%20Demo';
+// Documentation-only addresses (RFC 5737) so the samples never point at a real server.
+const LINK_SAMPLE = [
+  'vless://0b6f3c1e-5d2a-4c8e-9f41-7a2d6e9b3c10@203.0.113.10:443?encryption=none&security=reality&type=tcp&sni=www.example.com&fp=chrome&pbk=ExamplePublicKey&sid=f7d552&flow=xtls-rprx-vision#Reality%20Demo',
+  'trojan://example-password@198.51.100.20:443?type=ws&path=%2Fws&host=cdn.example.com&sni=cdn.example.com#Trojan%20WS',
+].join('\n');
 
 const MIHOMO_SAMPLE = `proxies:
   - name: Reality Demo
     type: vless
-    server: 82.139.194.56
+    server: 203.0.113.10
     port: 443
-    uuid: 8133d14c-a942-4ce3-9424-13b9395fbf1d
+    uuid: 0b6f3c1e-5d2a-4c8e-9f41-7a2d6e9b3c10
     network: tcp
     tls: true
-    servername: elaon.de
+    servername: www.example.com
     flow: xtls-rprx-vision
     client-fingerprint: chrome
     reality-opts:
-      public-key: XSw3ExamplePublicKey
+      public-key: ExamplePublicKey
       short-id: f7d552
   - name: Hysteria Demo
     type: hysteria2
@@ -62,6 +54,8 @@ type ActiveTool = 'yaml' | 'proxy';
 type SourceFormat = 'yaml' | 'json';
 type ProxySource = 'share' | 'mihomo';
 type ProxyView = 'details' | 'mihomo' | 'singbox' | 'share';
+
+const PROXY_SAMPLES: Record<ProxySource, string> = { share: LINK_SAMPLE, mihomo: MIHOMO_SAMPLE };
 
 function parseStructuredText(input: string): { data: unknown; format: SourceFormat } {
   if (!input.trim()) throw new Error('请输入 YAML 或 JSON 内容');
@@ -83,65 +77,116 @@ function parseStructuredText(input: string): { data: unknown; format: SourceForm
   }
 }
 
-function displayValue(value: unknown): string {
+function formatBytes(size: number): string {
+  return size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
+}
+
+function downloadText(fileName: string, text: string) {
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+async function writeClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch {
+    // Clipboard API is unavailable on insecure origins or when permission is denied.
+  }
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.setAttribute('readonly', '');
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand('copy');
+  textarea.remove();
+  if (!copied) throw new Error('copy failed');
+}
+
+function leafClass(value: unknown): string {
+  if (value === null || value === undefined) return 'is-null';
+  if (typeof value === 'string') return 'is-string';
+  return 'is-literal';
+}
+
+function leafText(value: unknown): string {
   if (value === null) return 'null';
   if (value === undefined) return 'undefined';
-  if (typeof value === 'string') return value || '""';
+  if (typeof value === 'string') return value === '' ? '""' : value;
   return String(value);
 }
 
+const TREE_PAGE = 100;
+
 function TreeNode({ value, label, depth = 0 }: { value: unknown; label?: string; depth?: number }) {
+  const [limit, setLimit] = useState(TREE_PAGE);
+
   if (value === null || typeof value !== 'object') {
     return (
-      <div className="tree-leaf" style={{ '--tree-depth': depth } as CSSProperties}>
-        {label !== undefined && <span className="tree-label">{label}</span>}
-        <span className="tree-value">{displayValue(value)}</span>
+      <div className="tree-leaf">
+        {label !== undefined && <span className="tree-key">{label}</span>}
+        <span className={`tree-value ${leafClass(value)}`}>{leafText(value)}</span>
       </div>
     );
   }
 
-  const entries = Array.isArray(value)
+  const isArray = Array.isArray(value);
+  const entries = isArray
     ? value.map((item, index) => [String(index), item] as const)
     : Object.entries(value as Record<string, unknown>);
-  const visibleEntries = entries.slice(0, 100);
 
   return (
-    <details className="tree-group" open={depth < 2} style={{ '--tree-depth': depth } as CSSProperties}>
+    <details className="tree-group" open={depth < 4}>
       <summary>
-        {label !== undefined && <span className="tree-label">{label}</span>}
-        <span className="tree-kind">{Array.isArray(value) ? 'Array' : 'Object'}</span>
-        <span className="tree-count">{entries.length}</span>
+        {label !== undefined && <span className="tree-key">{label}</span>}
+        <span className="tree-count">{isArray ? `[${entries.length}]` : `{${entries.length}}`}</span>
       </summary>
       <div className="tree-children">
-        {visibleEntries.map(([key, item]) => (
+        {entries.slice(0, limit).map(([key, item]) => (
           <TreeNode key={key} label={key} value={item} depth={depth + 1} />
         ))}
-        {entries.length > visibleEntries.length && (
-          <div className="tree-overflow">还有 {entries.length - visibleEntries.length} 项</div>
+        {entries.length > limit && (
+          <button className="tree-more" type="button" onClick={() => setLimit(entries.length)}>
+            显示剩余 {entries.length - limit} 项
+          </button>
         )}
       </div>
     </details>
   );
 }
 
-function CopyButton({ value, label = '复制' }: { value: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
+function CopyButton({ value, label = '复制', className = 'act' }: { value: string; label?: string; className?: string }) {
+  const [state, setState] = useState<'idle' | 'done' | 'failed'>('idle');
+  const timer = useRef<number | undefined>(undefined);
+
+  useEffect(() => () => window.clearTimeout(timer.current), []);
 
   async function copy() {
-    await navigator.clipboard.writeText(value);
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1400);
+    try {
+      await writeClipboard(value);
+      setState('done');
+    } catch {
+      setState('failed');
+    }
+    window.clearTimeout(timer.current);
+    timer.current = window.setTimeout(() => setState('idle'), 1600);
   }
 
   return (
-    <button className="button" type="button" onClick={copy} disabled={!value}>
-      {copied ? <ClipboardCheck size={14} /> : <Clipboard size={14} />}
-      {copied ? '已复制' : label}
+    <button className={className} type="button" onClick={copy} disabled={!value} aria-live="polite">
+      {state === 'done' ? '已复制' : state === 'failed' ? '复制失败' : label}
     </button>
   );
 }
 
-function ImportButton({ onImport, accept = '.yaml,.yml,.json', label = '导入文件' }: { onImport: (content: string, name: string) => void; accept?: string; label?: string }) {
+function ImportButton({ onImport, accept }: { onImport: (content: string, name: string) => void; accept: string }) {
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function readFile(event: ChangeEvent<HTMLInputElement>) {
@@ -153,127 +198,100 @@ function ImportButton({ onImport, accept = '.yaml,.yml,.json', label = '导入�
 
   return (
     <>
-      <button className="button" type="button" onClick={() => inputRef.current?.click()}>
-        <FileInput size={14} /> {label}
-      </button>
-      <input ref={inputRef} className="visually-hidden" type="file" accept={accept} onChange={readFile} />
+      <button className="act" type="button" onClick={() => inputRef.current?.click()}>导入</button>
+      <input ref={inputRef} className="visually-hidden" type="file" name="import-file" accept={accept} onChange={readFile} tabIndex={-1} />
     </>
+  );
+}
+
+function Column({ bar, children, className = '' }: { bar: ReactNode; children: ReactNode; className?: string }) {
+  return (
+    <div className={`column ${className}`}>
+      <div className="bar">{bar}</div>
+      <div className="surface">{children}</div>
+    </div>
   );
 }
 
 function YamlStudio() {
   const [input, setInput] = useState(YAML_SAMPLE);
   const [fileName, setFileName] = useState('config.yaml');
-  const [notice, setNotice] = useState('实时检查');
   const parsed = useMemo(() => {
     try {
       return { ...parseStructuredText(input), error: '' };
     } catch (error) {
       return {
         data: null,
-        format: 'yaml' as SourceFormat,
+        format: (/^\s*[\[{]/.test(input) ? 'json' : 'yaml') as SourceFormat,
         error: error instanceof Error ? error.message : '无法解析',
       };
     }
   }, [input]);
+  const isEmpty = !input.trim();
+  const nextFormat = parsed.format === 'yaml' ? 'json' : 'yaml';
 
-  function formatInput() {
-    if (parsed.error) return;
-    const formatted = parsed.format === 'json'
-      ? JSON.stringify(parsed.data, null, 2)
-      : stringifyYaml(parsed.data, { indent: 2, lineWidth: 0 });
-    setInput(formatted.trimEnd());
-    setNotice('已格式化');
-  }
-
-  function convertInput() {
-    if (parsed.error) return;
-    const nextFormat = parsed.format === 'yaml' ? 'json' : 'yaml';
-    const next = nextFormat === 'json'
+  function serialize(format: SourceFormat): string {
+    return format === 'json'
       ? JSON.stringify(parsed.data, null, 2)
       : stringifyYaml(parsed.data, { indent: 2, lineWidth: 0 }).trimEnd();
-    setInput(next);
-    setFileName(fileName.replace(/\.(ya?ml|json)$/i, `.${nextFormat}`));
-    setNotice(`已转为 ${nextFormat.toUpperCase()}`);
   }
 
-  function download() {
-    const extension = parsed.format === 'json' ? 'json' : 'yaml';
-    const blob = new Blob([input], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = fileName.replace(/\.(ya?ml|json)$/i, `.${extension}`);
-    anchor.click();
-    URL.revokeObjectURL(url);
+  function convert() {
+    if (parsed.error) return;
+    setInput(serialize(nextFormat));
+    setFileName(fileName.replace(/\.(ya?ml|json)$/i, '') + (nextFormat === 'json' ? '.json' : '.yaml'));
   }
 
   return (
-    <div className="tool-surface">
-      <div className="toolbar">
-        <div className="toolbar-section" aria-label="文件操作">
-          <span className="toolbar-label">文件</span>
-          <ImportButton onImport={(content, name) => {
-            setInput(content);
-            setFileName(name);
-            setNotice(`已导入 ${name}`);
-          }} />
-          <button className="button" type="button" onClick={download}><Download size={14} /> 下载文件</button>
+    <div className="studio">
+      <Column bar={(
+        <>
+          <span className="meta">
+            <span className="meta-file">{fileName}</span>
+            <span>{input.split(/\r?\n/).length} 行 · {formatBytes(new Blob([input]).size)}</span>
+          </span>
+          <span className="bar-actions">
+            <ImportButton accept=".yaml,.yml,.json" onImport={(content, name) => { setInput(content); setFileName(name); }} />
+            <button className="act" type="button" disabled={isEmpty} onClick={() => downloadText(fileName, input)}>下载</button>
+            <CopyButton value={input} />
+            <button className="act act-quiet" type="button" disabled={isEmpty} onClick={() => { setInput(''); setFileName('config.yaml'); }}>清空</button>
+          </span>
+        </>
+      )}>
+        <textarea
+          className="editor"
+          name="structured-text"
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          spellCheck={false}
+          aria-label="YAML 或 JSON 编辑器"
+          placeholder="粘贴 YAML / JSON，或导入 .yaml / .yml / .json 文件"
+        />
+      </Column>
+
+      <Column className="column-output" bar={(
+        <>
+          <span className={`meta ${parsed.error && !isEmpty ? 'meta-error' : ''}`} role="status">
+            {isEmpty ? '等待输入' : parsed.error ? `${parsed.format.toUpperCase()} 语法错误` : `${parsed.format.toUpperCase()} · 语法正确`}
+          </span>
+          <span className="bar-actions">
+            <button className="act" type="button" disabled={Boolean(parsed.error)} onClick={() => setInput(serialize(parsed.format))}>格式化</button>
+            <button className="act act-primary" type="button" disabled={Boolean(parsed.error)} onClick={convert}>
+              转为 {nextFormat.toUpperCase()}
+            </button>
+          </span>
+        </>
+      )}>
+        <div className="scroll tree-view">
+          {isEmpty ? (
+            <p className="placeholder">结构会显示在这里</p>
+          ) : parsed.error ? (
+            <p className="error-text">{parsed.error}</p>
+          ) : (
+            <TreeNode value={parsed.data} />
+          )}
         </div>
-        <div className="toolbar-section toolbar-section-main" aria-label="内容处理">
-          <span className="toolbar-label">处理</span>
-          <button className="button" type="button" onClick={formatInput} disabled={Boolean(parsed.error)}>格式化</button>
-          <CopyButton value={input} label="复制内容" />
-          <button className="button button-primary" type="button" onClick={convertInput} disabled={Boolean(parsed.error)}>
-            转为 {parsed.format === 'yaml' ? 'JSON' : 'YAML'}
-          </button>
-        </div>
-      </div>
-
-      <div className="split-view">
-        <section className="pane editor-pane">
-          <div className="pane-heading">
-            <span className="file-name"><FileText size={14} /> {fileName}</span>
-            <div className="pane-heading-actions">
-              <span className="format-label">{parsed.format.toUpperCase()}</span>
-              <button className="pane-action danger-action" type="button" onClick={() => { setInput(''); setFileName('config.yaml'); }}><Trash2 size={13} /> 清空</button>
-            </div>
-          </div>
-          <textarea
-            className="text-editor"
-            value={input}
-            onChange={(event) => { setInput(event.target.value); setNotice('实时检查'); }}
-            spellCheck={false}
-            aria-label="YAML 或 JSON 编辑器"
-            placeholder="粘贴内容，或导入 .yaml / .yml / .json 文件"
-          />
-        </section>
-
-        <section className="pane preview-pane">
-          <div className="pane-heading">
-            <span>结构</span>
-            <span className={parsed.error ? 'state state-error' : 'state'}>
-              {parsed.error ? <CircleAlert size={13} /> : <Check size={13} />}
-              {parsed.error ? '错误' : notice}
-            </span>
-          </div>
-          <div className="tree-view">
-            {parsed.error ? (
-              <div className="message message-error">
-                <CircleAlert size={17} />
-                <div><strong>无法解析</strong><p>{parsed.error}</p></div>
-              </div>
-            ) : (
-              <TreeNode value={parsed.data} label="root" />
-            )}
-          </div>
-        </section>
-      </div>
-
-      <div className="statusbar">
-        <span>{input.split(/\r?\n/).length} 行 · {new Blob([input]).size} bytes</span>
-        <span>仅在浏览器本地处理</span>
-      </div>
+      </Column>
     </div>
   );
 }
@@ -281,8 +299,6 @@ function YamlStudio() {
 const FIELD_LABELS: Array<[keyof ParsedProxy, string]> = [
   ['uuid', 'UUID'],
   ['password', '密码'],
-  ['transport', '传输'],
-  ['security', '安全'],
   ['sni', 'SNI'],
   ['flow', 'Flow'],
   ['publicKey', 'PublicKey'],
@@ -291,256 +307,264 @@ const FIELD_LABELS: Array<[keyof ParsedProxy, string]> = [
   ['path', 'Path'],
   ['host', 'Host'],
   ['serviceName', 'ServiceName'],
+  ['alpn', 'ALPN'],
+  ['skipCertVerify', '跳过证书验证'],
+  ['encryption', '加密'],
+  ['plugin', '插件'],
+  ['pluginOpts', '插件参数'],
 ];
 
 interface ProxyDisplayNode {
-  index: number;
+  key: string;
   name: string;
-  protocol: string;
-  server?: string;
-  port?: number;
+  tags: string[];
+  address?: string;
   convertible: boolean;
   warning?: string;
   fields: Array<{ label: string; value: string }>;
 }
 
+function formatAddress(server?: string, port?: number): string | undefined {
+  if (!server) return undefined;
+  const host = server.includes(':') ? `[${server}]` : server;
+  return port ? `${host}:${port}` : host;
+}
+
 function displayParsedProxy(proxy: ParsedProxy, index: number): ProxyDisplayNode {
   return {
-    index,
+    key: `link-${index}`,
     name: proxy.name,
-    protocol: proxy.protocol,
-    server: proxy.server,
-    port: proxy.port,
+    tags: [proxy.protocol, proxy.security, proxy.transport].filter((tag) => tag && tag !== 'none'),
+    address: formatAddress(proxy.server, proxy.port),
     convertible: true,
     fields: FIELD_LABELS.flatMap(([key, label]) => {
       const value = proxy[key];
-      return value === undefined || value === '' ? [] : [{ label, value: String(value) }];
+      if (value === undefined || value === '' || (key === 'encryption' && value === 'none')) return [];
+      return [{ label, value: Array.isArray(value) ? value.join(', ') : value === true ? '是' : String(value) }];
     }),
+  };
+}
+
+function displayProxyLink(node: ProxyLinkInspectionNode): ProxyDisplayNode {
+  if (node.parsed) return displayParsedProxy(node.parsed, node.index);
+  const protocol = node.raw.match(/^([a-z0-9+.-]+):\/\//i)?.[1].toLowerCase();
+  return {
+    key: `link-${node.index}`,
+    name: `第 ${node.lineNumber} 行`,
+    tags: protocol ? [protocol] : [],
+    convertible: false,
+    warning: node.warning,
+    fields: [{ label: '原始内容', value: node.raw }],
   };
 }
 
 function displayMihomoProxy(node: MihomoProxyNode): ProxyDisplayNode {
   return {
-    index: node.index,
+    key: `mihomo-${node.index}`,
     name: node.name,
-    protocol: node.protocol,
-    server: node.server,
-    port: node.port,
+    tags: [node.protocol],
+    address: formatAddress(node.server, node.port),
     convertible: node.convertible,
     warning: node.warning,
     fields: node.fields,
   };
 }
 
-function displayProxyLink(node: ProxyLinkInspectionNode): ProxyDisplayNode {
-  if (node.parsed) return displayParsedProxy(node.parsed, node.index);
-  const protocol = node.raw.match(/^([a-z0-9+.-]+):\/\//i)?.[1].toLowerCase() || 'unknown';
-  return {
-    index: node.index,
-    name: `第 ${node.lineNumber} 行无法解析`,
-    protocol,
-    convertible: false,
-    warning: `第 ${node.lineNumber} 行：${node.warning}`,
-    fields: [{ label: '原始内容', value: node.raw }],
-  };
-}
-
-function ProxyDetails({ nodes }: { nodes: ProxyDisplayNode[] }) {
+function NodeList({ nodes }: { nodes: ProxyDisplayNode[] }) {
   return (
-    <div className="proxy-list">
+    <ol className="nodes">
       {nodes.map((node) => (
-        <article className={`node-card ${node.convertible ? '' : 'is-unsupported'}`} key={`${node.protocol}-${node.server}-${node.index}`}>
-          <header className="node-header">
-            <div className="node-title">
-              <span className="protocol-badge">{node.protocol.toUpperCase()}</span>
-              <div>
-                <h3>{node.name}</h3>
-                <p>{node.server ? `${node.server}${node.port ? `:${node.port}` : ''}` : '未提供服务器'}</p>
-              </div>
-            </div>
-            <span className="node-number">{String(node.index + 1).padStart(2, '0')}</span>
-          </header>
-          {node.warning && <p className="node-warning"><CircleAlert size={13} /> {node.warning}</p>}
-          <dl className="node-fields">
-            {node.fields.map(({ label, value }) => (
-              <div key={label}>
-                <dt>{label}</dt>
-                <dd>{value}</dd>
-              </div>
-            ))}
-          </dl>
-        </article>
+        <li className={node.convertible ? 'node' : 'node is-bad'} key={node.key}>
+          <div className="node-head">
+            <span className="node-name">{node.name}</span>
+            {node.tags.length > 0 && <span className="node-tags">{node.tags.join(' · ')}</span>}
+          </div>
+          {node.address && <div className="node-address">{node.address}</div>}
+          {node.warning && <p className="node-warning">{node.warning}</p>}
+          {node.fields.length > 0 && (
+            <dl className="kv">
+              {node.fields.map(({ label, value }) => (
+                <div key={label}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+          )}
+        </li>
       ))}
-    </div>
+    </ol>
   );
 }
 
-function ProxyStudio() {
-  const [source, setSource] = useState<ProxySource>('share');
-  const [input, setInput] = useState(VLESS_SAMPLE);
-  const [fileName, setFileName] = useState('proxy-links.txt');
-  const [view, setView] = useState<ProxyView>('details');
+interface ProxyResult {
+  nodes: ProxyDisplayNode[];
+  convertible: number;
+  outputs: Partial<Record<ProxyView, string>>;
+  notes: string[];
+  error: string;
+}
 
-  const result = useMemo(() => {
-    if (!input.trim()) return { proxies: [] as ParsedProxy[], nodes: [] as ProxyDisplayNode[], mihomo: '', singbox: '', share: '', unsupported: 0, error: '' };
-    try {
-      if (source === 'share') {
-        const inspection = inspectProxyLinks(input);
-        const proxies = inspection.proxies;
-        return {
-          proxies,
-          nodes: inspection.nodes.map(displayProxyLink),
-          mihomo: proxies.length ? toMihomoYaml(proxies) : '',
-          singbox: proxies.length ? toSingBoxJson(proxies) : '',
-          share: '',
-          unsupported: inspection.nodes.length - proxies.length,
-          error: '',
-        };
-      }
-      const inspection = inspectMihomoYaml(input);
+function inspectProxyInput(input: string, source: ProxySource): ProxyResult {
+  if (!input.trim()) return { nodes: [], convertible: 0, outputs: {}, notes: [], error: '' };
+  try {
+    if (source === 'share') {
+      const inspection = inspectProxyLinks(input);
+      const { proxies } = inspection;
+      const skipped = inspection.nodes.length - proxies.length;
+      const duplicates = proxies.length - new Set(proxies.map((proxy) => proxy.name)).size;
       return {
-        proxies: inspection.nodes.flatMap((node) => node.parsed ? [node.parsed] : []),
-        nodes: inspection.nodes.map(displayMihomoProxy),
-        mihomo: '',
-        singbox: '',
-        share: inspection.shareLinks,
-        unsupported: inspection.nodes.filter((node) => !node.convertible).length,
+        nodes: inspection.nodes.map(displayProxyLink),
+        convertible: proxies.length,
+        outputs: proxies.length ? { mihomo: toMihomoYaml(proxies), singbox: toSingBoxJson(proxies) } : {},
+        notes: [
+          inspection.base64 ? '已解码 Base64 订阅' : '',
+          skipped ? `${skipped} 条无法解析，已跳过` : '',
+          duplicates ? `${duplicates} 个重名节点，输出时自动编号` : '',
+        ].filter(Boolean),
         error: '',
       };
-    } catch (error) {
-      return {
-        proxies: [] as ParsedProxy[],
-        nodes: [] as ProxyDisplayNode[],
-        mihomo: '',
-        singbox: '',
-        share: '',
-        unsupported: 0,
-        error: error instanceof Error ? error.message : '无法解析',
-      };
     }
-  }, [input, source]);
+    const inspection = inspectMihomoYaml(input);
+    const skipped = inspection.nodes.filter((node) => !node.convertible).length;
+    return {
+      nodes: inspection.nodes.map(displayMihomoProxy),
+      convertible: inspection.nodes.length - skipped,
+      outputs: inspection.shareLinks ? { share: inspection.shareLinks } : {},
+      notes: skipped ? [`${skipped} 个节点暂不支持，已跳过`] : [],
+      error: '',
+    };
+  } catch (error) {
+    return { nodes: [], convertible: 0, outputs: {}, notes: [], error: error instanceof Error ? error.message : '无法解析' };
+  }
+}
 
-  const output = view === 'mihomo'
-    ? result.mihomo
-    : view === 'singbox'
-      ? result.singbox
-      : view === 'share'
-        ? result.share
-        : source === 'mihomo' ? result.share : JSON.stringify(result.proxies, null, 2);
-  const availableViews: Array<[ProxyView, string]> = source === 'share'
-    ? [['details', '节点'], ['mihomo', 'Mihomo'], ['singbox', 'sing-box']]
-    : [['details', '节点'], ['share', '分享链接']];
+const VIEW_LABELS: Record<ProxyView, string> = {
+  details: '节点',
+  mihomo: 'Mihomo',
+  singbox: 'sing-box',
+  share: '分享链接',
+};
 
-  function changeSource(next: ProxySource) {
-    setSource(next);
-    setInput(next === 'share' ? VLESS_SAMPLE : MIHOMO_SAMPLE);
-    setFileName(next === 'share' ? 'proxy-links.txt' : 'mihomo.yaml');
-    setView('details');
+function ProxyStudio() {
+  const [source, setSource] = useState<ProxySource>('share');
+  const [inputs, setInputs] = useState<Record<ProxySource, string>>(PROXY_SAMPLES);
+  const [view, setView] = useState<ProxyView>('details');
+  const input = inputs[source];
+  const result = useMemo(() => inspectProxyInput(input, source), [input, source]);
+
+  const views: ProxyView[] = source === 'share' ? ['details', 'mihomo', 'singbox'] : ['details', 'share'];
+  const activeView = views.includes(view) ? view : 'details';
+  const output = activeView === 'details' ? '' : result.outputs[activeView] ?? '';
+  const outputFile = activeView === 'mihomo' ? 'mihomo.yaml' : activeView === 'singbox' ? 'sing-box.json' : 'proxy-links.txt';
+
+  function setInput(value: string) {
+    setInputs((current) => ({ ...current, [source]: value }));
   }
 
   return (
-    <div className="tool-surface">
-      <div className="toolbar proxy-toolbar">
-        <div className="toolbar-section" aria-label="输入设置">
-          <span className="toolbar-label">输入</span>
-          <div className="segmented" role="group" aria-label="输入类型">
-            <button className={source === 'share' ? 'is-active' : ''} type="button" onClick={() => changeSource('share')}>分享链接</button>
-            <button className={source === 'mihomo' ? 'is-active' : ''} type="button" onClick={() => changeSource('mihomo')}>YAML</button>
+    <div className="studio">
+      <Column bar={(
+        <>
+          <div className="seg" role="radiogroup" aria-label="输入类型">
+            {(['share', 'mihomo'] as const).map((key) => (
+              <button key={key} type="button" role="radio" aria-checked={source === key} className={source === key ? 'is-active' : ''} onClick={() => setSource(key)}>
+                {key === 'share' ? '分享链接' : 'Mihomo YAML'}
+              </button>
+            ))}
           </div>
-          {source === 'mihomo' && (
-            <ImportButton accept=".yaml,.yml" onImport={(content, name) => { setInput(content); setFileName(name); }} />
+          <span className="bar-actions">
+            <ImportButton accept={source === 'share' ? '.txt,.conf,.list' : '.yaml,.yml'} onImport={(content) => setInput(content)} />
+            <button className="act" type="button" disabled={input === PROXY_SAMPLES[source]} onClick={() => setInput(PROXY_SAMPLES[source])}>示例</button>
+            <button className="act act-quiet" type="button" disabled={!input} onClick={() => setInput('')}>清空</button>
+          </span>
+        </>
+      )}>
+        <textarea
+          className="editor editor-links"
+          name="proxy-input"
+          value={input}
+          onChange={(event) => setInput(event.target.value)}
+          placeholder={source === 'share' ? '每行一个分享链接，也可以直接粘贴 Base64 订阅内容' : '粘贴或导入包含 proxies 的 Mihomo YAML'}
+          spellCheck={false}
+          aria-label={source === 'share' ? '代理分享链接输入' : 'Mihomo YAML 输入'}
+        />
+      </Column>
+
+      <Column className="column-output" bar={(
+        <>
+          <div className="views" role="tablist" aria-label="输出格式">
+            {views.map((key) => (
+              <button key={key} type="button" role="tab" aria-selected={activeView === key} className={activeView === key ? 'is-active' : ''} onClick={() => setView(key)}>
+                {VIEW_LABELS[key]}
+                {key === 'details' && result.nodes.length > 0 && <span className="count">{result.nodes.length}</span>}
+              </button>
+            ))}
+          </div>
+          {activeView !== 'details' && (
+            <span className="bar-actions">
+              <button className="act" type="button" disabled={!output} onClick={() => downloadText(outputFile, output)}>下载</button>
+              <CopyButton value={output} className="act act-primary" />
+            </span>
+          )}
+        </>
+      )}>
+        <div className="scroll" role="tabpanel" aria-label={VIEW_LABELS[activeView]}>
+          {!input.trim() ? (
+            <p className="placeholder">{source === 'share' ? '粘贴分享链接后，这里会列出每个节点' : '粘贴 Mihomo YAML 后，这里会列出每个节点'}</p>
+          ) : result.error ? (
+            <p className="error-text">{result.error}</p>
+          ) : (
+            <>
+              {result.notes.length > 0 && <p className="notes">{result.notes.join(' · ')}</p>}
+              {activeView === 'details' ? (
+                <NodeList nodes={result.nodes} />
+              ) : output ? (
+                <pre className="code"><code>{output}</code></pre>
+              ) : (
+                <p className="placeholder">没有可转换的节点</p>
+              )}
+            </>
           )}
         </div>
-        <div className="toolbar-section toolbar-section-main" aria-label="当前操作">
-          <span className="toolbar-label">操作</span>
-          <button className="button" type="button" onClick={() => changeSource(source)}><RotateCcw size={14} /> 恢复示例</button>
-          <CopyButton value={output} label="复制当前结果" />
-        </div>
-      </div>
-
-      <div className="split-view proxy-split">
-        <section className="pane editor-pane">
-          <div className="pane-heading">
-            <span className="file-name"><FileText size={14} /> {fileName}</span>
-            <div className="pane-heading-actions">
-              <span className="format-label">{source === 'share' ? 'LINK' : 'YAML'}</span>
-              <button className="pane-action danger-action" type="button" onClick={() => setInput('')}><Trash2 size={13} /> 清空</button>
-            </div>
-          </div>
-          <textarea
-            className="text-editor proxy-editor"
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            placeholder={source === 'share' ? '每行粘贴一个代理分享链接' : '粘贴或导入包含 proxies 的 Mihomo YAML'}
-            spellCheck={false}
-            aria-label={source === 'share' ? '代理分享链接输入' : 'Mihomo YAML 输入'}
-          />
-        </section>
-
-        <section className="pane preview-pane">
-          <div className="pane-heading result-heading">
-            <div className="result-tabs" role="tablist" aria-label="解析结果">
-              {availableViews.map(([key, label]) => (
-                <button key={key} className={view === key ? 'is-active' : ''} type="button" onClick={() => setView(key)}>{label}</button>
-              ))}
-            </div>
-            {!result.error && input.trim() && (
-              <span className="state">
-                {result.unsupported ? <CircleAlert size={13} /> : <Check size={13} />}
-                {result.unsupported ? `${result.unsupported} 条需检查` : 'Ready'}
-              </span>
-            )}
-          </div>
-          <div className="proxy-output">
-            {!input.trim() ? (
-              <div className="empty-state"><Network size={22} /><p>粘贴链接或导入 YAML</p></div>
-            ) : result.error ? (
-              <div className="message message-error">
-                <CircleAlert size={17} />
-                <div><strong>无法解析</strong><p>{result.error}</p></div>
-              </div>
-            ) : view === 'details' ? (
-              <ProxyDetails nodes={result.nodes} />
-            ) : !output ? (
-              <div className="empty-state"><CircleAlert size={22} /><p>没有可转换的节点</p></div>
-            ) : (
-              <pre className="conversion-output"><code>{output}</code></pre>
-            )}
-          </div>
-        </section>
-      </div>
-
-      <div className="statusbar">
-        <span>{result.error ? result.error : source === 'share'
-          ? `${result.nodes.length} 条链接 · ${result.proxies.length} 可转换${result.unsupported ? ` · ${result.unsupported} 需检查` : ''}`
-          : `${result.nodes.length} 个节点 · ${result.nodes.length - result.unsupported} 可转换${result.unsupported ? ` · ${result.unsupported} 暂不支持` : ''}`}</span>
-        <span>仅在浏览器本地处理</span>
-      </div>
+      </Column>
     </div>
   );
 }
 
 export default function Home() {
   const [activeTool, setActiveTool] = useState<ActiveTool>('yaml');
+  const tools: Array<[ActiveTool, string]> = [['yaml', 'YAML / JSON'], ['proxy', '代理链接']];
 
   return (
-    <main className="app-shell">
-      <header className="app-header">
-        <div className="brand" aria-label="AyayaYaml">
-          <span className="brand-mark" aria-hidden="true">AY</span>
-          <span>AyayaYaml</span>
+    <main className="app">
+      <header className="intro">
+        <h1 className="brand"><span className="brand-mark" aria-hidden="true">AY</span>AyayaYaml</h1>
+        <div className="tools" role="tablist" aria-label="工具">
+          {tools.map(([key, label]) => (
+            <button
+              key={key}
+              id={`tab-${key}`}
+              type="button"
+              role="tab"
+              aria-selected={activeTool === key}
+              aria-controls={`panel-${key}`}
+              className={activeTool === key ? 'is-active' : ''}
+              onClick={() => setActiveTool(key)}
+            >
+              {label}
+            </button>
+          ))}
         </div>
-        <span className="local-note">Local only</span>
+        <p className="lede">YAML、JSON 与代理分享链接互转。<strong>所有内容只在浏览器本地解析，不会上传。</strong></p>
       </header>
 
-      <div className="app-tabs" role="tablist" aria-label="工具选择">
-        <button className={activeTool === 'yaml' ? 'is-active' : ''} type="button" role="tab" aria-selected={activeTool === 'yaml'} onClick={() => setActiveTool('yaml')}>YAML</button>
-        <button className={activeTool === 'proxy' ? 'is-active' : ''} type="button" role="tab" aria-selected={activeTool === 'proxy'} onClick={() => setActiveTool('proxy')}>Proxy</button>
-      </div>
-
-      <section className="workspace" aria-label={activeTool === 'yaml' ? 'YAML 工作区' : 'Proxy 工作区'}>
-        {activeTool === 'yaml' ? <YamlStudio /> : <ProxyStudio />}
-      </section>
+      {/* Keep both tools mounted so switching tabs never discards what was pasted. */}
+      {tools.map(([key]) => (
+        <section key={key} id={`panel-${key}`} role="tabpanel" aria-labelledby={`tab-${key}`} hidden={activeTool !== key}>
+          {key === 'yaml' ? <YamlStudio /> : <ProxyStudio />}
+        </section>
+      ))}
     </main>
   );
 }

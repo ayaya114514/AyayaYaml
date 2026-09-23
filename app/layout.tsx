@@ -1,4 +1,4 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Geist, Geist_Mono } from 'next/font/google';
 import './globals.css';
 
@@ -24,11 +24,11 @@ export const metadata: Metadata = {
   metadataBase: isGitHubPages
     ? new URL(`${publicOrigin}/`)
     : undefined,
-  title: 'AyayaYaml — YAML 与代理配置工具',
-  description: '浏览器本地运行的 YAML 编辑、格式化、语法检查、JSON 转换与代理链接解析工具。',
+  title: 'AyayaYaml',
+  description: '在浏览器本地完成 YAML / JSON 编辑、格式化与互转，以及代理分享链接与 Mihomo、sing-box 配置的互转。',
   icons: { icon: favicon },
   openGraph: {
-    title: 'AyayaYaml — YAML 与代理配置工具',
+    title: 'AyayaYaml',
     description: 'YAML 与代理配置，本地处理更安心。',
     type: 'website',
     locale: 'zh_CN',
@@ -36,10 +36,15 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: 'summary_large_image',
-    title: 'AyayaYaml — YAML 与代理配置工具',
+    title: 'AyayaYaml',
     description: 'YAML 与代理配置，本地处理更安心。',
     images: [ogImage],
   },
+};
+
+export const viewport: Viewport = {
+  themeColor: '#0b0b0b',
+  colorScheme: 'dark',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
