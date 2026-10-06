@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from 'next';
-import { Geist, Geist_Mono } from 'next/font/google';
+import { JetBrains_Mono, Source_Serif_4 } from 'next/font/google';
 import './globals.css';
 
 const isGitHubPages = process.env.GITHUB_PAGES === 'true';
@@ -10,13 +10,13 @@ const publicOrigin = 'https://ayaya114514.github.io';
 const ogImage = isGitHubPages ? `${publicOrigin}${basePath}/og.png` : '/og.png';
 const favicon = `${basePath}/favicon.svg`;
 
-const geistSans = Geist({
-  variable: '--font-geist-sans',
+const mono = JetBrains_Mono({
+  variable: '--font-mono',
   subsets: ['latin'],
 });
 
-const geistMono = Geist_Mono({
-  variable: '--font-geist-mono',
+const serif = Source_Serif_4({
+  variable: '--font-serif',
   subsets: ['latin'],
 });
 
@@ -43,14 +43,14 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: '#0b0b0b',
+  themeColor: '#1f1e1d',
   colorScheme: 'dark',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="zh-CN">
-      <body className={`${geistSans.variable} ${geistMono.variable}`}>
+      <body className={`${mono.variable} ${serif.variable}`}>
         {children}
       </body>
     </html>
