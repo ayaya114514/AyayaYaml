@@ -1,4 +1,7 @@
 <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2" y="2" width="60" height="60" rx="15" fill="#F2F2F2" stroke="#383838" stroke-width="4"/>
-  <text x="32" y="39" fill="#080808" font-family="ui-monospace, monospace" font-size="22" font-weight="800" letter-spacing="-2" text-anchor="middle">AY</text>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#262624" stroke="#4A4945" stroke-width="3"/>
+  <rect x="13" y="16" width="24" height="6" rx="3" fill="#F5F4EE"/>
+  <rect x="21" y="29" width="5" height="6" rx="2.5" fill="#D97757"/>
+  <rect x="29" y="29" width="22" height="6" rx="3" fill="#A8BFD4"/>
+  <rect x="29" y="42" width="16" height="6" rx="3" fill="#9C9A92"/>
 </svg>
