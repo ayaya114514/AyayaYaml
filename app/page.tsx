@@ -3,6 +3,7 @@
 import {
   Fragment,
   useCallback,
+  useDeferredValue,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -238,6 +239,9 @@ function CodeEditor({ value, onChange, marks = [], label, placeholder, name }: {
   );
 }
 
+// Past this many lines one element per token costs more than the colour is worth.
+const HIGHLIGHT_MAX_LINES = 2000;
+
 function CodeView({ text, language }: { text: string; language: CodeLanguage }) {
   const lines = useMemo(() => text.split('\n'), [text]);
   return (
@@ -245,7 +249,7 @@ function CodeView({ text, language }: { text: string; language: CodeLanguage }) 
       <pre className="code-gutter" aria-hidden="true">{lineNumbers(lines.length)}</pre>
       <pre className="code">
         <code>
-          {lines.map((line, index) => (
+          {lines.length > HIGHLIGHT_MAX_LINES ? text : lines.map((line, index) => (
             <Fragment key={index}>
               {highlightLine(line, language)}
               {index < lines.length - 1 ? '\n' : ''}
@@ -309,7 +313,13 @@ function TreeNode({ value, label, depth = 0 }: { value: unknown; label?: string;
   );
 }
 
-function CopyButton({ value, label = '复制', className = 'act' }: { value: string; label?: string; className?: string }) {
+function CopyButton({ value, getValue, label = '复制', className = 'act' }: {
+  value: string;
+  // Reads the text at click time when `value` may lag behind the input.
+  getValue?: () => string;
+  label?: string;
+  className?: string;
+}) {
   const [state, setState] = useState<'idle' | 'done' | 'failed'>('idle');
   const timer = useRef<number | undefined>(undefined);
 
@@ -317,7 +327,7 @@ function CopyButton({ value, label = '复制', className = 'act' }: { value: str
 
   async function copy() {
     try {
-      await writeClipboard(value);
+      await writeClipboard(getValue ? getValue() : value);
       setState('done');
     } catch {
       setState('failed');
@@ -380,22 +390,32 @@ function StatusBar({ items }: { items: StatusItem[] }) {
   );
 }
 
+// Typing stays immediate: parsing and the output pane follow a deferred copy of the
+// input, which React can interrupt while a large document is still being typed.
 function YamlStudio() {
   const [input, setInput] = useState(YAML_SAMPLE);
   const [fileName, setFileName] = useState('config.yaml');
-  const parsed = useMemo(() => parseStructuredText(input), [input]);
+  const deferredInput = useDeferredValue(input);
+  const parsed = useMemo(() => parseStructuredText(deferredInput), [deferredInput]);
   const isEmpty = !input.trim();
   const nextFormat = parsed.format === 'yaml' ? 'json' : 'yaml';
   const formatLabel = parsed.format.toUpperCase();
+  const tree = useMemo(() => <TreeNode value={parsed.data} />, [parsed]);
+
+  // Buttons act on what is in the editor now, even if the deferred parse is behind.
+  const latest = () => (deferredInput === input ? parsed : parseStructuredText(input));
 
   function serialize(format: SourceFormat): string {
+    const { data } = latest();
     return format === 'json'
-      ? JSON.stringify(parsed.data, null, 2)
-      : stringifyYaml(parsed.data, { indent: 2, lineWidth: 0 }).trimEnd();
+      ? JSON.stringify(data, null, 2)
+      : stringifyYaml(data, { indent: 2, lineWidth: 0 }).trimEnd();
   }
 
   function convert() {
-    if (parsed.error) return;
+    const current = latest();
+    if (current.error) return;
+    const nextFormat = current.format === 'yaml' ? 'json' : 'yaml';
     setInput(serialize(nextFormat));
     setFileName(fileName.replace(/\.(ya?ml|json)$/i, '') + (nextFormat === 'json' ? '.json' : '.yaml'));
   }
@@ -436,7 +456,7 @@ function YamlStudio() {
           tabs={<span className="tab is-active">结构</span>}
           actions={(
             <>
-              <button className="act" type="button" disabled={isEmpty || Boolean(parsed.error)} onClick={() => setInput(serialize(parsed.format))}>格式化</button>
+              <button className="act" type="button" disabled={isEmpty || Boolean(parsed.error)} onClick={() => { const current = latest(); if (!current.error) setInput(serialize(current.format)); }}>格式化</button>
               <button className="act act-primary" type="button" disabled={isEmpty || Boolean(parsed.error)} onClick={convert}>
                 转为 {nextFormat.toUpperCase()}
               </button>
@@ -452,13 +472,13 @@ function YamlStudio() {
                 {parsed.error}
               </p>
             ) : (
-              <TreeNode value={parsed.data} />
+              tree
             )}
           </div>
         </Pane>
       </div>
 
-      <StatusBar items={[status, { text: `${countLines(input)} 行` }, { text: formatBytes(new Blob([input]).size) }]} />
+      <StatusBar items={[status, { text: `${countLines(deferredInput)} 行` }, { text: formatBytes(new Blob([deferredInput]).size) }]} />
     </div>
   );
 }
@@ -642,18 +662,33 @@ const VIEW_FILES: Record<Exclude<ProxyView, 'details'>, [string, CodeLanguage]> 
   share: ['proxy-links.txt', 'links'],
 };
 
+function outputLanguage(view: ProxyView): CodeLanguage {
+  return view === 'details' ? 'links' : VIEW_FILES[view][1];
+}
+
 function ProxyStudio() {
   const [source, setSource] = useState<ProxySource>('share');
   const [inputs, setInputs] = useState<Record<ProxySource, string>>(PROXY_SAMPLES);
   const [view, setView] = useState<ProxyView>('details');
   const input = inputs[source];
   const isEmpty = !input.trim();
-  const result = useMemo(() => inspectProxyInput(input, source), [input, source]);
+  // Same as YamlStudio: inspection and output follow a deferred copy of the input.
+  const deferred = useDeferredValue({ input, source });
+  const result = useMemo(() => inspectProxyInput(deferred.input, deferred.source), [deferred]);
 
   const views: ProxyView[] = source === 'share' ? ['details', 'mihomo', 'singbox'] : ['details', 'share'];
   const activeView = views.includes(view) ? view : 'details';
   const output = activeView === 'details' ? '' : result.outputs[activeView] ?? '';
-  const [outputFile, outputLanguage] = activeView === 'details' ? ['', 'links' as const] : VIEW_FILES[activeView];
+  const latestOutput = () =>
+    deferred.input === input && deferred.source === source
+      ? output
+      : inspectProxyInput(input, source).outputs[activeView as Exclude<ProxyView, 'details'>] ?? '';
+  const details = useMemo(
+    () => <NodeTable nodes={result.nodes} markerLabel={deferred.source === 'share' ? '行' : '#'} />,
+    [result, deferred.source],
+  );
+  const code = useMemo(() => <CodeView text={output} language={outputLanguage(activeView)} />, [output, activeView]);
+  const outputFile = activeView === 'details' ? '' : VIEW_FILES[activeView][0];
 
   function setInput(value: string) {
     setInputs((current) => ({ ...current, [source]: value }));
@@ -713,8 +748,8 @@ function ProxyStudio() {
           )}
           actions={activeView !== 'details' && (
             <>
-              <button className="act" type="button" disabled={!output} onClick={() => downloadText(outputFile, output)}>下载</button>
-              <CopyButton value={output} className="act act-primary" />
+              <button className="act" type="button" disabled={!output} onClick={() => downloadText(outputFile, latestOutput())}>下载</button>
+              <CopyButton value={output} getValue={latestOutput} className="act act-primary" />
             </>
           )}
         >
@@ -724,9 +759,9 @@ function ProxyStudio() {
             ) : result.error ? (
               <p className="error-text">{result.error}</p>
             ) : activeView === 'details' ? (
-              <NodeTable nodes={result.nodes} markerLabel={source === 'share' ? '行' : '#'} />
+              details
             ) : output ? (
-              <CodeView text={output} language={outputLanguage} />
+              code
             ) : (
               <p className="placeholder">没有可转换的节点</p>
             )}
